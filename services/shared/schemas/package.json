@@ -1,16 +1,11 @@
 {
   "name": "@shared/schemas",
   "version": "1.0.0",
-  "description": "Shared Zod schemas for stock analysis platform",
+  "description": "Streamlined Zod schemas for MVP stock analysis platform",
   "main": "index.ts",
   "type": "module",
   "scripts": {
-    "test": "vitest",
-    "test:watch": "vitest --watch",
-    "test:coverage": "vitest --coverage",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint . --ext .ts",
-    "lint:fix": "eslint . --ext .ts --fix",
     "build": "tsc",
     "clean": "rm -rf dist"
   },
@@ -19,21 +14,9 @@
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
-    "typescript": "^5.3.3",
-    "vitest": "^1.2.0",
-    "eslint": "^8.56.0",
-    "@typescript-eslint/eslint-plugin": "^6.19.0",
-    "@typescript-eslint/parser": "^6.19.0"
+    "typescript": "^5.3.3"
   },
   "exports": {
-    ".": "./index.ts",
-    "./intent": "./intent.ts",
-    "./screen": "./screen.ts",
-    "./facts": "./facts.ts",
-    "./dcf": "./dcf.ts",
-    "./catalyst": "./catalyst.ts",
-    "./tech": "./tech.ts",
-    "./dca": "./dca.ts",
-    "./synthesis": "./synthesis.ts"
+    ".": "./index.ts"
   }
 }
