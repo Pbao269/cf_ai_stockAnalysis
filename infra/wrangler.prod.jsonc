@@ -1,0 +1,75 @@
+{
+  "extends": "./wrangler.common.jsonc",
+  "name": "stock-report-prod",
+  "vars": {
+    "ENVIRONMENT": "production"
+  },
+  "service_bindings": [
+    {
+      "name": "intent",
+      "service": "intent-prod"
+    },
+    {
+      "name": "screener",
+      "service": "screener-prod"
+    },
+    {
+      "name": "fundamentals-dcf",
+      "service": "fundamentals-dcf-prod"
+    },
+    {
+      "name": "technicals",
+      "service": "technicals-prod"
+    },
+    {
+      "name": "catalyst-sentiment",
+      "service": "catalyst-sentiment-prod"
+    },
+    {
+      "name": "entry-dca",
+      "service": "entry-dca-prod"
+    },
+    {
+      "name": "user-data",
+      "service": "user-data-prod"
+    },
+    {
+      "name": "notion-export",
+      "service": "notion-export-prod"
+    },
+    {
+      "name": "etl-workflows",
+      "service": "etl-workflows-prod"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "FUNDAMENTALS_SNAP",
+      "id": "your-fundamentals-snap-namespace-id-prod"
+    },
+    {
+      "binding": "LATEST_QUOTES",
+      "id": "your-latest-quotes-namespace-id-prod"
+    },
+    {
+      "binding": "SCREENER_INDEX",
+      "id": "your-screener-index-namespace-id-prod"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "OHLCV",
+      "bucket_name": "ohlcv-prod"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "USER_DB",
+      "database_id": "your-user-db-id-prod",
+      "database_name": "user-db-prod"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  }
+}

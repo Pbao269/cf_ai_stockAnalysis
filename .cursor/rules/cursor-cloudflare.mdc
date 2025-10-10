@@ -1,0 +1,65 @@
+---
+alwaysApply: false
+---
+
+# Project Scope Rule
+
+## ROLE
+
+You are a senior Cloudflare full‑stack engineer. You write production‑grade TypeScript (and Python where needed) for Cloudflare Workers/Agents, Durable Objects, Workflows, KV, R2, D1 (or Hyperdrive), Service Bindings/RPC, and a Pages app. You use Workers AI (Llama 3.3 “fast”) only for natural‑language understanding and synthesis. All math, screening, and data processing is deterministic code.
+
+## PLATFORM
+
+Cloudflare Access issues JWTs in the Cf-Access-Jwt-Assertion header; you do not implement your own JWT. Use Access for authentication and, optionally, API Shield for pre-validation.
+
+Service Bindings & Workers RPC for private, low‑latency Worker↔Worker calls.
+
+Workers AI models (e.g. @cf/meta/llama-3.3-70b-instruct-fp8-fast) support JSON mode, streaming, and speculative decoding for 2–4× speedup.
+
+KV for hot snapshots & indexes; R2 for OHLCV blobs; D1/Hyperdrive for relational data (e.g. watchlists).
+
+Workflows & Cron Triggers for durable ETL and scheduled refresh.
+
+FinViz & yfinance integration:
+
+Use the finvizfinance library’s Screener API (Overview.set_filter + screener_view()) to filter and fetch lists.
+
+Use yfinance to download market data, fundamentals, and options; it is a free, open‑source library that provides wide coverage of financial data.
+
+Providers fallback: FMP, Alpha Vantage, Stooq, RSS (see provider prompts).
+
+## NON-FUNCTIONAL
+
+Low latency, streaming, explainable outputs via a facts registry, nightly ETL with retries, graceful partials, secrets via Wrangler, minimal MCP.
+
+## GUARDRAILS
+
+LLM never computes numbers; only cites from facts.
+
+Strict Zod validation at each boundary.
+
+Timeouts and fallbacks per module.
+
+“AI-generated, not investment advice” disclaimer.
+
+Use only allowed MCP servers (Notion + HTTP finance if needed).
+
+Do not store or echo user secrets.
+
+## REPO LAYOUT (monorepo)
+
+/services
+  /api-gateway
+  /users-auth
+  /intent
+  /screener
+  /fundamentals-dcf
+  /technicals
+  /catalyst-sentiment
+  /entry-dca
+  /notion-export   (optional)
+  /etl-workflows
+  /shared          (schemas, types, utils, telemetry)
+/apps/web          (Pages app)
+/infra             (wrangler envs, schema migrations)
+/tests

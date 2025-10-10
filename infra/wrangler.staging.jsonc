@@ -1,0 +1,75 @@
+{
+  "extends": "./wrangler.common.jsonc",
+  "name": "stock-report-staging",
+  "vars": {
+    "ENVIRONMENT": "staging"
+  },
+  "service_bindings": [
+    {
+      "name": "intent",
+      "service": "intent-staging"
+    },
+    {
+      "name": "screener",
+      "service": "screener-staging"
+    },
+    {
+      "name": "fundamentals-dcf",
+      "service": "fundamentals-dcf-staging"
+    },
+    {
+      "name": "technicals",
+      "service": "technicals-staging"
+    },
+    {
+      "name": "catalyst-sentiment",
+      "service": "catalyst-sentiment-staging"
+    },
+    {
+      "name": "entry-dca",
+      "service": "entry-dca-staging"
+    },
+    {
+      "name": "user-data",
+      "service": "user-data-staging"
+    },
+    {
+      "name": "notion-export",
+      "service": "notion-export-staging"
+    },
+    {
+      "name": "etl-workflows",
+      "service": "etl-workflows-staging"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "FUNDAMENTALS_SNAP",
+      "id": "your-fundamentals-snap-namespace-id-staging"
+    },
+    {
+      "binding": "LATEST_QUOTES",
+      "id": "your-latest-quotes-namespace-id-staging"
+    },
+    {
+      "binding": "SCREENER_INDEX",
+      "id": "your-screener-index-namespace-id-staging"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "OHLCV",
+      "bucket_name": "ohlcv-staging"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "USER_DB",
+      "database_id": "your-user-db-id-staging",
+      "database_name": "user-db-staging"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  }
+}
