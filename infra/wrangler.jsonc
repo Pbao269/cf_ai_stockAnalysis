@@ -1,0 +1,91 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "stock-report-mvp",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-12-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "node_compat": true,
+  "module_rules": [
+    {
+      "type": "ESModule",
+      "globs": ["**/*.ts", "**/*.js"]
+    }
+  ],
+  "minify": true,
+  "logpush": true,
+  "vars": {
+    "ENVIRONMENT": "development"
+  },
+  "build": {
+    "command": "npm run build",
+    "cwd": "."
+  },
+  "service_bindings": [
+    {
+      "name": "intent",
+      "service": "intent-mvp"
+    },
+    {
+      "name": "screener", 
+      "service": "screener-mvp"
+    },
+    {
+      "name": "fundamentals-dcf",
+      "service": "fundamentals-dcf-mvp"
+    },
+    {
+      "name": "technicals",
+      "service": "technicals-mvp"
+    },
+    {
+      "name": "catalyst-sentiment",
+      "service": "catalyst-sentiment-mvp"
+    },
+    {
+      "name": "entry-dca",
+      "service": "entry-dca-mvp"
+    },
+    {
+      "name": "user-data",
+      "service": "user-data-mvp"
+    },
+    {
+      "name": "notion-export",
+      "service": "notion-export-mvp"
+    },
+    {
+      "name": "etl-workflows",
+      "service": "etl-workflows-mvp"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "FUNDAMENTALS_SNAP",
+      "id": "your-fundamentals-snap-namespace-id"
+    },
+    {
+      "binding": "LATEST_QUOTES", 
+      "id": "your-latest-quotes-namespace-id"
+    },
+    {
+      "binding": "SCREENER_INDEX",
+      "id": "your-screener-index-namespace-id"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "OHLCV",
+      "bucket_name": "ohlcv-mvp"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "USER_DB",
+      "database_id": "your-user-db-id",
+      "database_name": "user-db-mvp"
+    }
+  ],
+  "ai": {
+    "binding": "AI"
+  }
+}
