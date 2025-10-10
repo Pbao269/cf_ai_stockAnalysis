@@ -61,28 +61,28 @@
   "kv_namespaces": [
     {
       "binding": "FUNDAMENTALS_SNAP",
-      "id": "your-fundamentals-snap-namespace-id"
+      "id": "10125d4762c347debe6081447d73cd24"
     },
     {
       "binding": "LATEST_QUOTES", 
-      "id": "your-latest-quotes-namespace-id"
+      "id": "3ae0cca668694a2d82f0ad2f61328b3d"
     },
     {
       "binding": "SCREENER_INDEX",
-      "id": "your-screener-index-namespace-id"
+      "id": "0030f6f797674f98b552ea23df6d6797"
     }
   ],
   "r2_buckets": [
     {
-      "binding": "OHLCV",
-      "bucket_name": "ohlcv-mvp"
+      "bucket_name": "ohlcv-mvp",
+      "binding": "ohlcv_mvp"
     }
   ],
   "d1_databases": [
     {
-      "binding": "USER_DB",
-      "database_id": "your-user-db-id",
-      "database_name": "user-db-mvp"
+      "binding": "user_db_mvp",
+      "database_name": "user-db-mvp",
+      "database_id": "d9c180a9-f6af-4c00-951e-ea1236773064"
     }
   ],
   "ai": {
