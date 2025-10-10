@@ -44,8 +44,8 @@
     "typecheck": "pnpm run --recursive typecheck",
     "build": "pnpm run --recursive build",
     "clean": "pnpm run --recursive clean && rm -rf node_modules",
-    "db:migrate": "wrangler d1 migrations apply USER_DB --config infra/wrangler.jsonc",
-    "db:seed": "wrangler d1 execute USER_DB --command 'SELECT 1' --config infra/wrangler.jsonc"
+    "db:migrate": "wrangler d1 migrations apply user-db-mvp --config infra/wrangler.jsonc",
+    "db:seed": "wrangler d1 execute user-db-mvp --command 'SELECT 1' --config infra/wrangler.jsonc"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241218.0",
