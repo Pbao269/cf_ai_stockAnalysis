@@ -1,7 +1,7 @@
 {
   "name": "@shared/schemas",
   "version": "1.0.0",
-  "description": "Streamlined Zod schemas for MVP stock analysis platform",
+  "description": "Core Zod schemas for MVP stock analysis platform",
   "main": "index.ts",
   "type": "module",
   "scripts": {
@@ -17,6 +17,14 @@
     "typescript": "^5.3.3"
   },
   "exports": {
-    ".": "./index.ts"
+    ".": "./index.ts",
+    "./intent": "./intent.ts",
+    "./screen": "./screen.ts",
+    "./facts": "./facts.ts",
+    "./dcf": "./dcf.ts",
+    "./catalyst": "./catalyst.ts",
+    "./tech": "./tech.ts",
+    "./dca": "./dca.ts",
+    "./synthesis": "./synthesis.ts"
   }
 }
