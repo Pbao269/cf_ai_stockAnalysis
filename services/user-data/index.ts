@@ -1,51 +1,42 @@
 import { Intent, validateIntent, type IntentType } from '../shared/schemas/intent';
 
 export interface Env {
-  USER_DB: D1Database;
+  user_db_mvp: D1Database;
 }
 
 /**
- * User Data Service - Handle user watchlists and preferences via RPC
- * User identity comes from Cloudflare Access JWT
- * Works with current D1 schema: watchlists + watchlist_items + user_preferences
+ * User Data Service - Handle watchlists and preferences via RPC
+ * MVP Version: No authentication - uses session-based user identification
+ * Works with simplified D1 schema for testing
  */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    // Extract user_id from Cloudflare Access JWT
-    const user_id = extractUserIdFromJWT(request);
-    if (!user_id) {
-      return new Response(JSON.stringify({
-        success: false,
-        error: 'Unauthorized - no valid user ID'
-      }), {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
+    // For MVP: Extract user_id from query params or use default
+    const user_id = url.searchParams.get('user_id') || 'mvp-user-001';
 
     try {
       // Route RPC calls
       if (path === '/add_to_watchlist' && request.method === 'POST') {
-        return await addToWatchlist(request, env.USER_DB, user_id);
+        return await addToWatchlist(request, env.user_db_mvp, user_id);
       }
       
       if (path === '/remove_from_watchlist' && request.method === 'POST') {
-        return await removeFromWatchlist(request, env.USER_DB, user_id);
+        return await removeFromWatchlist(request, env.user_db_mvp, user_id);
       }
       
       if (path === '/get_watchlist' && request.method === 'GET') {
-        return await getWatchlist(env.USER_DB, user_id);
+        return await getWatchlist(env.user_db_mvp, user_id);
       }
       
       if (path === '/set_preferences' && request.method === 'POST') {
-        return await setPreferences(request, env.USER_DB, user_id);
+        return await setPreferences(request, env.user_db_mvp, user_id);
       }
       
       if (path === '/get_preferences' && request.method === 'GET') {
-        return await getPreferences(env.USER_DB, user_id);
+        return await getPreferences(env.user_db_mvp, user_id);
       }
 
       return new Response(JSON.stringify({
@@ -69,37 +60,14 @@ export default {
   }
 };
 
-/**
- * Extract user ID from Cloudflare Access JWT
- */
-function extractUserIdFromJWT(request: Request): string | null {
-  const jwtHeader = request.headers.get('Cf-Access-Jwt-Assertion');
-  if (!jwtHeader) {
-    return null;
-  }
-
-  try {
-    // Parse JWT payload (simplified - in production you'd verify the signature)
-    const parts = jwtHeader.split('.');
-    if (parts.length !== 3) {
-      return null;
-    }
-
-    const payload = JSON.parse(atob(parts[1] || ''));
-    return (payload.sub as string) || (payload.email as string) || null;
-  } catch (error) {
-    console.error('JWT parsing error:', error);
-    return null;
-  }
-}
 
 /**
- * Add ticker to user's watchlist
- * Uses current schema: creates/uses default watchlist + adds to watchlist_items
+ * Add ticker to watchlist
+ * MVP Version: Simple ticker storage without user authentication
  */
 async function addToWatchlist(request: Request, db: D1Database, user_id: string): Promise<Response> {
   try {
-    const { ticker } = await request.json() as { ticker: string };
+    const { ticker, notes } = await request.json() as { ticker: string; notes?: string };
     
     if (!ticker || typeof ticker !== 'string') {
       return new Response(JSON.stringify({
@@ -114,34 +82,18 @@ async function addToWatchlist(request: Request, db: D1Database, user_id: string)
     // Normalize ticker (uppercase, no spaces)
     const normalizedTicker = ticker.toUpperCase().trim();
 
-    // First, ensure user has a default watchlist
-    let defaultWatchlist = await db.prepare(`
-      SELECT id FROM watchlists 
-      WHERE user_id = ? AND is_default = TRUE
-    `).bind(user_id).first();
-
-    if (!defaultWatchlist) {
-      // Create default watchlist
-      const createResult = await db.prepare(`
-        INSERT INTO watchlists (user_id, name, description, is_default)
-        VALUES (?, 'Default Watchlist', 'My default stock watchlist', TRUE)
-      `).bind(user_id).run();
-      
-      defaultWatchlist = { id: createResult.meta.last_row_id };
-    }
-
-    // Add ticker to watchlist_items (UNIQUE constraint will handle duplicates)
+    // Add ticker to watchlist (UNIQUE constraint will handle duplicates)
     const result = await db.prepare(`
-      INSERT INTO watchlist_items (watchlist_id, symbol)
+      INSERT INTO watchlists (ticker, notes)
       VALUES (?, ?)
-    `).bind(defaultWatchlist.id, normalizedTicker).run();
+    `).bind(normalizedTicker, notes || null).run();
 
     return new Response(JSON.stringify({
       success: true,
       data: {
         ticker: normalizedTicker,
         added: (result.meta?.changes || 0) > 0,
-        watchlist_id: defaultWatchlist.id
+        id: result.meta?.last_row_id
       }
     }), {
       headers: { 'Content-Type': 'application/json' }
@@ -160,8 +112,8 @@ async function addToWatchlist(request: Request, db: D1Database, user_id: string)
 }
 
 /**
- * Remove ticker from user's watchlist
- * Uses current schema: removes from watchlist_items
+ * Remove ticker from watchlist
+ * MVP Version: Simple ticker removal without user authentication
  */
 async function removeFromWatchlist(request: Request, db: D1Database, user_id: string): Promise<Response> {
   try {
@@ -180,13 +132,11 @@ async function removeFromWatchlist(request: Request, db: D1Database, user_id: st
     // Normalize ticker
     const normalizedTicker = ticker.toUpperCase().trim();
 
-    // Remove from watchlist_items via JOIN with watchlists
+    // Remove from watchlist
     const result = await db.prepare(`
-      DELETE FROM watchlist_items 
-      WHERE symbol = ? AND watchlist_id IN (
-        SELECT id FROM watchlists WHERE user_id = ?
-      )
-    `).bind(normalizedTicker, user_id).run();
+      DELETE FROM watchlists 
+      WHERE ticker = ?
+    `).bind(normalizedTicker).run();
 
     return new Response(JSON.stringify({
       success: true,
@@ -211,26 +161,24 @@ async function removeFromWatchlist(request: Request, db: D1Database, user_id: st
 }
 
 /**
- * Get user's watchlist
- * Uses current schema: JOIN watchlists + watchlist_items
+ * Get watchlist
+ * MVP Version: Returns all tickers without user authentication
  */
 async function getWatchlist(db: D1Database, user_id: string): Promise<Response> {
   try {
     const result = await db.prepare(`
-      SELECT wi.symbol, wi.added_at, w.name as watchlist_name
-      FROM watchlist_items wi
-      JOIN watchlists w ON wi.watchlist_id = w.id
-      WHERE w.user_id = ?
-      ORDER BY wi.added_at DESC
-    `).bind(user_id).all();
+      SELECT ticker, created_at, notes
+      FROM watchlists 
+      ORDER BY created_at DESC
+    `).all();
 
     return new Response(JSON.stringify({
       success: true,
       data: {
         tickers: result.results.map((row: any) => ({
-          ticker: row.symbol,
-          added_at: row.added_at,
-          watchlist_name: row.watchlist_name
+          ticker: row.ticker,
+          added_at: new Date(row.created_at * 1000).toISOString(),
+          notes: row.notes
         }))
       }
     }), {
@@ -250,8 +198,8 @@ async function getWatchlist(db: D1Database, user_id: string): Promise<Response> 
 }
 
 /**
- * Set user preferences
- * Uses current schema: stores in user_preferences with preference_type = 'intent'
+ * Set preferences
+ * MVP Version: Stores global preferences without user authentication
  */
 async function setPreferences(request: Request, db: D1Database, user_id: string): Promise<Response> {
   try {
@@ -273,14 +221,14 @@ async function setPreferences(request: Request, db: D1Database, user_id: string)
       gates: prefs.gates || {}
     });
 
-    // Store in user_preferences table with preference_type = 'intent'
+    // Store in preferences table as global defaults
     await db.prepare(`
-      INSERT INTO user_preferences (user_id, preference_type, preference_data)
-      VALUES (?, 'intent', ?)
-      ON CONFLICT(user_id, preference_type) DO UPDATE SET
-        preference_data = excluded.preference_data,
-        updated_at = CURRENT_TIMESTAMP
-    `).bind(user_id, JSON.stringify(validatedPrefs)).run();
+      INSERT INTO preferences (preference_key, preference_value)
+      VALUES ('default_intent', ?)
+      ON CONFLICT(preference_key) DO UPDATE SET
+        preference_value = excluded.preference_value,
+        updated_at = strftime('%s', 'now')
+    `).bind(JSON.stringify(validatedPrefs)).run();
 
     return new Response(JSON.stringify({
       success: true,
@@ -304,16 +252,16 @@ async function setPreferences(request: Request, db: D1Database, user_id: string)
 }
 
 /**
- * Get user preferences
- * Uses current schema: retrieves from user_preferences with preference_type = 'intent'
+ * Get preferences
+ * MVP Version: Returns global preferences without user authentication
  */
 async function getPreferences(db: D1Database, user_id: string): Promise<Response> {
   try {
     const result = await db.prepare(`
-      SELECT preference_data, updated_at
-      FROM user_preferences 
-      WHERE user_id = ? AND preference_type = 'intent'
-    `).bind(user_id).first();
+      SELECT preference_value, updated_at
+      FROM preferences 
+      WHERE preference_key = 'default_intent'
+    `).first();
 
     if (!result) {
       // Return default preferences if none exist
@@ -344,8 +292,8 @@ async function getPreferences(db: D1Database, user_id: string): Promise<Response
     }
 
     // Parse JSON preference data
-    const preferences = JSON.parse(result.preference_data as string);
-    preferences.updated_at = result.updated_at;
+    const preferences = JSON.parse(result.preference_value as string);
+    preferences.updated_at = new Date((result.updated_at as number) * 1000).toISOString();
 
     return new Response(JSON.stringify({
       success: true,

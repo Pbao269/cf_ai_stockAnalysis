@@ -10,7 +10,6 @@ You are a senior Cloudflare full‑stack engineer. You write production‑grade 
 
 ## PLATFORM
 
-Cloudflare Access issues JWTs in the Cf-Access-Jwt-Assertion header; you do not implement your own JWT. Use Access for authentication and, optionally, API Shield for pre-validation.
 
 Service Bindings & Workers RPC for private, low‑latency Worker↔Worker calls.
 
