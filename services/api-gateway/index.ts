@@ -1,22 +1,47 @@
 import { z } from 'zod';
-import { InvestmentIntent, ScreenerResults, StockAnalysis, type InvestmentIntentType } from '../shared/schemas';
+import { Intent, type IntentType } from '../shared/schemas/intent';
+import { ScreenHit, type ScreenHitType } from '../shared/schemas/screen';
+import { Facts, type FactsType } from '../shared/schemas/facts';
+import { DcfOutput, type DcfOutputType } from '../shared/schemas/dcf';
+import { CatalystOutput, type CatalystOutputType } from '../shared/schemas/catalyst';
+import { TechOutput, type TechOutputType } from '../shared/schemas/tech';
+import { DcaOutput, type DcaOutputType } from '../shared/schemas/dca';
+import { SynthesisOutput, type SynthesisOutputType } from '../shared/schemas/synthesis';
+
+// Cloudflare Workers types
+declare global {
+  interface Ai {
+    run(model: string, input: any): Promise<any>;
+  }
+  
+  interface Fetcher {
+    fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+  }
+}
 
 export interface Env {
   AI: Ai;
   intent: Fetcher;
   screener: Fetcher;
-  fundamentals: Fetcher;
+  'fundamentals-dcf': Fetcher;
+  technicals: Fetcher;
+  'catalyst-sentiment': Fetcher;
+  'entry-dca': Fetcher;
+  'user-data': Fetcher;
+  'notion-export': Fetcher;
+  'etl-workflows': Fetcher;
 }
 
 /**
  * API Gateway - Main entry point for the stock analysis platform
+ * Handles all external API requests and routes to internal services via Workers RPC
  */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    // CORS headers
+    // CORS headers - allow all for testing
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
@@ -29,21 +54,28 @@ export default {
 
     try {
       // Route requests
-      if (path === '/api/analyze' && request.method === 'POST') {
-        return await handleAnalysis(request, env, corsHeaders);
+      if (path === '/healthz' && request.method === 'GET') {
+        return await handleHealthCheck(env, corsHeaders);
       }
       
-      if (path === '/api/stock' && request.method === 'POST') {
-        return await handleStockAnalysis(request, env, corsHeaders);
+      if (path === '/intent' && request.method === 'POST') {
+        return await handleIntent(request, env, corsHeaders);
       }
-
-      if (path === '/api/health' && request.method === 'GET') {
-        return new Response(JSON.stringify({
-          status: 'healthy',
-          timestamp: new Date().toISOString()
-        }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-        });
+      
+      if (path === '/screen' && request.method === 'POST') {
+        return await handleScreen(request, env, corsHeaders);
+      }
+      
+      if (path === '/analyze' && request.method === 'GET') {
+        return await handleAnalyze(request, env, corsHeaders);
+      }
+      
+      if (path === '/export/notion' && request.method === 'POST') {
+        return await handleNotionExport(request, env, corsHeaders);
+      }
+      
+      if (path === '/watchlist' && request.method === 'POST') {
+        return await handleWatchlist(request, env, corsHeaders);
       }
 
       return new Response('Not found', { 
@@ -66,9 +98,55 @@ export default {
 };
 
 /**
- * Handle full analysis pipeline: intent -> screener -> stock analysis
+ * GET /healthz - Check resource freshness & provider reachability
  */
-async function handleAnalysis(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+async function handleHealthCheck(env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  const healthChecks = {
+    timestamp: new Date().toISOString(),
+    services: {} as Record<string, { status: string; latency?: number; error?: string }>,
+    overall_status: 'healthy'
+  };
+
+  // Check each service
+  const services = ['intent', 'screener', 'fundamentals-dcf', 'technicals', 'catalyst-sentiment', 'entry-dca', 'user-data'];
+  
+  for (const serviceName of services) {
+    const startTime = Date.now();
+    try {
+      const service = env[serviceName as keyof Env] as Fetcher;
+      const response = await service.fetch('http://localhost/health', {
+        method: 'GET',
+        signal: AbortSignal.timeout(5000) // 5 second timeout
+      });
+      
+      healthChecks.services[serviceName] = {
+        status: response.ok ? 'healthy' : 'unhealthy',
+        latency: Date.now() - startTime
+      };
+      
+      if (!response.ok) {
+        healthChecks.overall_status = 'degraded';
+      }
+    } catch (error) {
+      healthChecks.services[serviceName] = {
+        status: 'unhealthy',
+        latency: Date.now() - startTime,
+        error: error instanceof Error ? error.message : 'Unknown error'
+      };
+      healthChecks.overall_status = 'unhealthy';
+    }
+  }
+
+  return new Response(JSON.stringify(healthChecks), {
+    status: healthChecks.overall_status === 'healthy' ? 200 : 503,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+  });
+}
+
+/**
+ * POST /intent - Call intent.extract via RPC; return Intent
+ */
+async function handleIntent(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
   try {
     const { query } = await request.json() as { query: string };
     
@@ -82,77 +160,33 @@ async function handleAnalysis(request: Request, env: Env, corsHeaders: Record<st
       });
     }
 
-    // Step 1: Parse investment intent
-    const intentResponse = await env.intent.fetch('http://localhost/intent', {
+    // Call intent service via RPC
+    const intentResponse = await env.intent.fetch('http://localhost/extract', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query })
     });
 
     if (!intentResponse.ok) {
-      throw new Error('Failed to parse intent');
+      throw new Error('Intent extraction failed');
     }
 
-    const intentData = await intentResponse.json() as { success: boolean; data: InvestmentIntentType };
-    if (!intentData.success) {
-      throw new Error('Intent parsing failed');
-    }
-
-    // Step 2: Screen stocks
-    const screenerResponse = await env.screener.fetch('http://localhost/screener', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        intent: intentData.data,
-        query 
-      })
-    });
-
-    if (!screenerResponse.ok) {
-      throw new Error('Failed to screen stocks');
-    }
-
-    const screenerData = await screenerResponse.json() as { success: boolean; data: ScreenerResults };
-    if (!screenerData.success) {
-      throw new Error('Stock screening failed');
-    }
-
-    // Step 3: Analyze top stock (first result)
-    let topStockAnalysis = null;
-    if (screenerData.data.results.length > 0) {
-      const topSymbol = screenerData.data.results[0].symbol;
-      
-      const analysisResponse = await env.fundamentals.fetch('http://localhost/fundamentals', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: topSymbol })
-      });
-
-      if (analysisResponse.ok) {
-        const analysisData = await analysisResponse.json() as { success: boolean; data: StockAnalysis };
-        if (analysisData.success) {
-          topStockAnalysis = analysisData.data;
-        }
-      }
-    }
-
+    const intentData = await intentResponse.json() as { success: boolean; data: IntentType };
+    
     return new Response(JSON.stringify({
-      success: true,
-      data: {
-        intent: intentData.data,
-        screener_results: screenerData.data,
-        top_stock_analysis: topStockAnalysis
-      },
+      success: intentData.success,
+      data: intentData.data,
       timestamp: new Date().toISOString()
     }), {
+      status: intentData.success ? 200 : 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
 
   } catch (error) {
-    console.error('Analysis pipeline error:', error);
+    console.error('Intent extraction error:', error);
     return new Response(JSON.stringify({
       success: false,
-      error: 'Analysis failed',
+      error: 'Intent extraction failed',
       timestamp: new Date().toISOString()
     }), {
       status: 500,
@@ -162,49 +196,372 @@ async function handleAnalysis(request: Request, env: Env, corsHeaders: Record<st
 }
 
 /**
- * Handle individual stock analysis
+ * POST /screen - Call screener.screen; return top-5 hits
  */
-async function handleStockAnalysis(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+async function handleScreen(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
   try {
-    const { symbol } = await request.json() as { symbol: string };
+    const { intent, filters } = await request.json() as { 
+      intent?: IntentType; 
+      filters?: any;
+    };
     
-    if (!symbol) {
+    if (!intent && !filters) {
       return new Response(JSON.stringify({
         success: false,
-        error: 'Symbol is required'
+        error: 'Intent or filters are required'
       }), {
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
 
-    const analysisResponse = await env.fundamentals.fetch('http://localhost/fundamentals', {
+    // Call screener service via RPC
+    const screenerResponse = await env.screener.fetch('http://localhost/screen', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol })
+      body: JSON.stringify({ intent, filters })
     });
 
-    if (!analysisResponse.ok) {
-      throw new Error('Stock analysis failed');
+    if (!screenerResponse.ok) {
+      throw new Error('Stock screening failed');
     }
 
-    const analysisData = await analysisResponse.json() as { success: boolean; data: StockAnalysis };
+    const screenerData = await screenerResponse.json() as { success: boolean; data: { hits: ScreenHitType[] } };
     
     return new Response(JSON.stringify({
-      success: analysisData.success,
-      data: analysisData.data,
-      error: analysisData.success ? undefined : 'Analysis failed',
+      success: screenerData.success,
+      data: screenerData.data,
       timestamp: new Date().toISOString()
     }), {
-      status: analysisData.success ? 200 : 500,
+      status: screenerData.success ? 200 : 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
 
   } catch (error) {
-    console.error('Stock analysis error:', error);
+    console.error('Stock screening error:', error);
     return new Response(JSON.stringify({
       success: false,
-      error: 'Stock analysis failed',
+      error: 'Stock screening failed',
+      timestamp: new Date().toISOString()
+    }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+/**
+ * GET /analyze?ticker=XYZ - Start SSE with parallel analysis
+ */
+async function handleAnalyze(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  const url = new URL(request.url);
+  const ticker = url.searchParams.get('ticker');
+  
+  if (!ticker) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: 'Ticker parameter is required'
+    }), {
+      status: 400,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+
+  // Create SSE stream
+  const { readable, writable } = new TransformStream();
+  const writer = writable.getWriter();
+  const encoder = new TextEncoder();
+
+  // Start analysis in background
+  runAnalysisPipeline(ticker, env, writer, encoder).catch(error => {
+    console.error('Analysis pipeline error:', error);
+    writer.write(encoder.encode(`data: ${JSON.stringify({
+      type: 'error',
+      message: 'Analysis failed',
+      timestamp: new Date().toISOString()
+    })}\n\n`));
+    writer.close();
+  });
+
+  return new Response(readable, {
+    headers: {
+      ...corsHeaders,
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive'
+    }
+  });
+}
+
+/**
+ * Run the analysis pipeline with SSE streaming
+ */
+async function runAnalysisPipeline(
+  ticker: string, 
+  env: Env, 
+  writer: WritableStreamDefaultWriter, 
+  encoder: TextEncoder
+): Promise<void> {
+  const sendEvent = (type: string, data: any) => {
+    writer.write(encoder.encode(`data: ${JSON.stringify({ type, data, timestamp: new Date().toISOString() })}\n\n`));
+  };
+
+  try {
+    // Phase 1: Start parallel analysis calls
+    sendEvent('phase', { name: 'starting_analysis', ticker });
+    
+    const analysisPromises = [
+      env['fundamentals-dcf'].fetch('http://localhost/runDcf', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: ticker })
+      }),
+      env.technicals.fetch('http://localhost/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: ticker })
+      }),
+      env['catalyst-sentiment'].fetch('http://localhost/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: ticker })
+      }),
+      env['entry-dca'].fetch('http://localhost/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol: ticker })
+      })
+    ];
+
+    // Phase 2: Wait for analysis results
+    sendEvent('phase', { name: 'running_analysis', progress: 0 });
+    
+    const results = await Promise.allSettled(analysisPromises);
+    const analysisResults = {
+      dcf: null as DcfOutputType | null,
+      technicals: null as TechOutputType | null,
+      catalysts: null as CatalystOutputType | null,
+      dca: null as DcaOutputType | null
+    };
+
+    // Process results
+    const serviceNames = ['dcf', 'technicals', 'catalysts', 'dca'];
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled' && result.value.ok) {
+        sendEvent('analysis_complete', { service: serviceNames[index], ticker });
+      } else {
+        sendEvent('analysis_error', { service: serviceNames[index], error: 'Failed' });
+      }
+    });
+
+    // Phase 3: Build facts registry
+    sendEvent('phase', { name: 'building_facts', progress: 50 });
+    
+    let factsData: { success: boolean; data: FactsType } | null = null;
+    const factsResponse = await env['etl-workflows'].fetch('http://localhost/build', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol: ticker })
+    });
+
+    if (factsResponse.ok) {
+      factsData = await factsResponse.json() as { success: boolean; data: FactsType };
+      sendEvent('facts_complete', { ticker, facts: factsData.data });
+    }
+
+    // Phase 4: Synthesize report
+    sendEvent('phase', { name: 'synthesizing_report', progress: 75 });
+    
+    const synthesisResponse = await env['etl-workflows'].fetch('http://localhost/synthesizeReport', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        symbol: ticker,
+        analysis_results: analysisResults,
+        facts: factsData?.data
+      })
+    });
+
+    if (synthesisResponse.ok) {
+      const synthesisData = await synthesisResponse.json() as { success: boolean; data: SynthesisOutputType };
+      sendEvent('synthesis_complete', { ticker, report: synthesisData.data });
+    }
+
+    // Phase 5: Complete
+    sendEvent('phase', { name: 'complete', progress: 100 });
+    sendEvent('done', { ticker, timestamp: new Date().toISOString() });
+
+  } catch (error) {
+    sendEvent('error', { message: error instanceof Error ? error.message : 'Unknown error' });
+  } finally {
+    writer.close();
+  }
+}
+
+/**
+ * POST /export/notion - Call notion-export.exportPage (optional)
+ */
+async function handleNotionExport(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  try {
+    const { report, notionToken } = await request.json() as { 
+      report: any; 
+      notionToken: string;
+    };
+    
+    if (!report || !notionToken) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Report and Notion token are required'
+      }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Call notion-export service via RPC
+    const exportResponse = await env['notion-export'].fetch('http://localhost/exportPage', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ report, notionToken })
+    });
+
+    if (!exportResponse.ok) {
+      throw new Error('Notion export failed');
+    }
+
+    const exportData = await exportResponse.json() as { success: boolean; data: any };
+    
+    return new Response(JSON.stringify({
+      success: exportData.success,
+      data: exportData.data,
+      timestamp: new Date().toISOString()
+    }), {
+      status: exportData.success ? 200 : 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+
+  } catch (error) {
+    console.error('Notion export error:', error);
+    return new Response(JSON.stringify({
+      success: false,
+      error: 'Notion export failed',
+      timestamp: new Date().toISOString()
+    }), {
+      status: 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+}
+
+/**
+ * POST /watchlist - Handle watchlist operations
+ */
+async function handleWatchlist(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  try {
+    const { action, ticker, preferences, user_id } = await request.json() as { 
+      action: 'add' | 'remove' | 'get' | 'set_preferences';
+      ticker?: string;
+      preferences?: any;
+      user_id?: string;
+    };
+    
+    if (!action) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Action is required'
+      }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
+    let response: Response;
+    const baseUrl = `http://localhost?user_id=${user_id || 'mvp-user-001'}`;
+
+    switch (action) {
+      case 'add':
+        if (!ticker) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: 'Ticker is required for add action'
+          }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          });
+        }
+        response = await env['user-data'].fetch(`${baseUrl}/add_to_watchlist`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ticker })
+        });
+        break;
+
+      case 'remove':
+        if (!ticker) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: 'Ticker is required for remove action'
+          }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          });
+        }
+        response = await env['user-data'].fetch(`${baseUrl}/remove_from_watchlist`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ticker })
+        });
+        break;
+
+      case 'get':
+        response = await env['user-data'].fetch(`${baseUrl}/get_watchlist`, {
+          method: 'GET'
+        });
+        break;
+
+      case 'set_preferences':
+        if (!preferences) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: 'Preferences are required for set_preferences action'
+          }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          });
+        }
+        response = await env['user-data'].fetch(`${baseUrl}/set_preferences`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(preferences)
+        });
+        break;
+
+      default:
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'Invalid action'
+        }), {
+          status: 400,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+    }
+
+    const data = await response.json();
+    
+    return new Response(JSON.stringify({
+      success: data.success,
+      data: data.data,
+      timestamp: new Date().toISOString()
+    }), {
+      status: data.success ? 200 : 500,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+
+  } catch (error) {
+    console.error('Watchlist operation error:', error);
+    return new Response(JSON.stringify({
+      success: false,
+      error: 'Watchlist operation failed',
       timestamp: new Date().toISOString()
     }), {
       status: 500,
