@@ -2,10 +2,16 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "./dist",
-    "rootDir": "./src"
+    "rootDir": "../..",
+    "baseUrl": "../..",
+    "paths": {
+      "@/*": ["./*"]
+    }
   },
   "include": [
-    "src/**/*"
+    "**/*.ts",
+    "**/*.tsx",
+    "../shared/schemas/**/*.ts"
   ],
   "exclude": [
     "node_modules",

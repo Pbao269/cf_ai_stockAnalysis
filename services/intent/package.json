@@ -1,0 +1,17 @@
+{
+  "name": "@services/intent",
+  "version": "1.0.0",
+  "description": "Intent extraction service using Workers AI",
+  "main": "index.ts",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3"
+  }
+}

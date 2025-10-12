@@ -36,6 +36,19 @@ importers:
         specifier: ^3.25.0
         version: 3.114.15(@cloudflare/workers-types@4.20251008.0)
 
+  services/intent:
+    dependencies:
+      zod:
+        specifier: ^3.22.4
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^20.11.0
+        version: 20.19.20
+      typescript:
+        specifier: ^5.3.3
+        version: 5.9.3
+
 packages:
 
   /@cloudflare/kv-asset-handler@0.3.4:
@@ -2733,3 +2746,7 @@ packages:
   /zod@3.22.3:
     resolution: {integrity: sha512-EjIevzuJRiRPbVH4mGc8nApb/lVLKVpmUhAaR5R5doKGfAnGJ6Gr3CViAVjP+4FWSxCsybeWQdcgCtbX+7oZug==}
     dev: true
+
+  /zod@3.25.76:
+    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+    dev: false

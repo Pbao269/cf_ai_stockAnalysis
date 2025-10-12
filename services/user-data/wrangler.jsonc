@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/cloudflare/workers-sdk/main/packages/wrangler/config-schema.json",
+  "name": "user-data-mvp",
+  "main": "index.ts",
+  "compatibility_date": "2024-12-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [
+    {
+      "binding": "user_db_mvp",
+      "database_name": "user-db-mvp",
+      "database_id": "d9c180a9-f6af-4c00-951e-ea1236773064"
+    }
+  ]
+}

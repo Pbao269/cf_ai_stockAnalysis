@@ -42,10 +42,10 @@
     "lint": "pnpm run --recursive lint",
     "lint:fix": "pnpm run --recursive lint:fix",
     "typecheck": "pnpm run --recursive typecheck",
-    "build": "pnpm run --recursive build",
+    "build": "echo 'No build step needed - services deploy directly'",
     "clean": "pnpm run --recursive clean && rm -rf node_modules",
-    "db:migrate": "wrangler d1 migrations apply user-db-mvp --config infra/wrangler.jsonc",
-    "db:seed": "wrangler d1 execute user-db-mvp --command 'SELECT 1' --config infra/wrangler.jsonc"
+    "db:migrate": "cd services/user-data && wrangler d1 migrations apply user-db-mvp",
+    "db:seed": "cd services/user-data && wrangler d1 execute user-db-mvp --command 'SELECT 1'"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241218.0",
