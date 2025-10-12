@@ -1,4 +1,4 @@
-import { Intent, validateIntent, type IntentType } from '../shared/schemas/intent';
+import { Intent, validateIntent, type IntentType, type InvestmentObjectiveType, type RiskToleranceType, type StyleWeightsType, type InvestmentGatesType } from '../shared/schemas/intent';
 
 export interface Env {
   AI: Ai;
@@ -6,7 +6,7 @@ export interface Env {
 
 /**
  * Intent Service - Extract investment intent from natural language using Workers AI
- * Uses prompt engineering with few-shot examples and structured JSON output
+ * Simplified approach to avoid CPU time limits on free tier
  */
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -75,7 +75,7 @@ async function extractIntent(request: Request, env: Env, corsHeaders: Record<str
       });
     }
 
-    // Extract intent using AI with structured prompt
+    // Extract intent using AI with simplified approach
     const intent = await extract(query, env.AI);
     
     return new Response(JSON.stringify({
@@ -100,214 +100,227 @@ async function extractIntent(request: Request, env: Env, corsHeaders: Record<str
 }
 
 /**
- * Core intent extraction function using Workers AI
+ * Core intent extraction function using Workers AI - Simplified approach
+ * Removes JSON mode to avoid CPU time limits on free tier
  */
 export async function extract(text: string, ai: Ai): Promise<IntentType> {
-  const prompt = buildIntentExtractionPrompt(text);
-  
   try {
-    // Use Llama 3.3 70B with JSON mode for structured output
-    const response = await ai.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+    // Simple prompt without JSON mode to minimize CPU usage
+    const simplePrompt = `Analyze this investment query and respond with just 3 words separated by commas: objective, risk, horizon.
+
+Query: "${text}"
+
+Examples:
+"growth stocks" → growth, moderate, 5
+"conservative dividend stocks" → income, conservative, 10
+"aggressive tech stocks short term" → growth, aggressive, 1
+"balanced portfolio long term" → balanced, moderate, 10
+
+Respond with only: objective,risk,horizon`;
+
+    const response = await ai.run('@cf/meta/llama-3.1-8b-instruct-fp8-fast', {
       messages: [
         {
-          role: 'system',
-          content: prompt.system
-        },
-        {
           role: 'user',
-          content: prompt.user
+          content: simplePrompt
         }
       ],
-      response_format: { type: 'json_object' },
-      temperature: 0.1, // Low temperature for consistent structured output
-      max_tokens: 1000
+      temperature: 0.1,
+      max_tokens: 50 // Very short response to minimize CPU time
     });
 
-    // Parse AI response
+    // Parse the simple response
     const responseText = typeof response === 'string' ? response : (response as any).response;
-    const aiResponse = JSON.parse(responseText);
+    console.log('AI Response Text:', responseText);
     
-    // Validate and normalize the response
-    const validatedIntent = validateAndNormalizeIntent(aiResponse);
+    // Parse the simple comma-separated response
+    const parts = responseText.trim().split(',').map(p => p.trim().toLowerCase());
     
-    return validatedIntent;
+    if (parts.length >= 3) {
+      const [objective, risk, horizon] = parts;
+      
+      // Map to valid enum values
+      const mappedObjective = mapObjective(objective);
+      const mappedRisk = mapRiskTolerance(risk);
+      const horizonYears = parseInt(horizon) || 5;
+      
+      // Create intent with derived style weights
+      const intent: IntentType = {
+        objective: mappedObjective,
+        risk_tolerance: mappedRisk,
+        horizon_years: Math.max(1, Math.min(50, horizonYears)),
+        style_weights: deriveStyleWeights(mappedObjective, mappedRisk),
+        gates: deriveGatesFromText(text),
+        source: 'AI'
+      };
+      
+      return intent;
+    } else {
+      throw new Error('Invalid response format');
+    }
 
   } catch (error) {
     console.error('AI intent extraction failed:', error);
+    console.error('Error details:', {
+      message: (error as Error).message,
+      stack: (error as Error).stack,
+      name: (error as Error).name
+    });
+    
     // Return default intent as fallback
-    return getDefaultIntent();
+    const fallbackIntent = getDefaultIntent();
+    fallbackIntent.source = 'Fallback';
+    return fallbackIntent;
   }
 }
 
 /**
- * Build sophisticated prompt with few-shot examples and context engineering
+ * Map objective text to valid enum value
  */
-function buildIntentExtractionPrompt(userQuery: string) {
-  const systemPrompt = `You are an expert investment advisor AI that extracts structured investment intent from natural language queries.
-
-Your task is to analyze user queries and extract:
-1. Investment objective (growth, income, balanced, preservation, speculation)
-2. Risk tolerance (conservative, moderate, aggressive, very_aggressive)
-3. Investment horizon in years
-4. Style weights (must sum to 100): value, growth, momentum, quality, size, volatility
-5. Investment gates/filters based on mentioned constraints
-
-IMPORTANT: This MVP only handles US stocks traded in USD. All price constraints and market cap values are in USD.
-
-CRITICAL RULES:
-- Style weights MUST sum to exactly 100
-- Derive gates from mentioned limits (price_max, rev_cagr_min, sectors, etc.)
-- Use conservative defaults for missing information
-- Never hallucinate or add information not present in the query
-- Always return valid JSON matching the exact schema
-- All prices and market caps are in USD (no currency conversion needed)
-
-FEW-SHOT EXAMPLES:
-
-Query: "I want growth stocks under $50, US software companies, risk-averse, 3-5 years"
-Response: {
-  "objective": "growth",
-  "risk_tolerance": "conservative",
-  "horizon_years": 4,
-  "style_weights": {
-    "value": 20,
-    "growth": 40,
-    "momentum": 15,
-    "quality": 15,
-    "size": 5,
-    "volatility": 5
-  },
-  "gates": {
-    "price_max": 50,
-    "sectors_include": ["Technology"],
-    "countries_include": ["US"]
-  }
+function mapObjective(text: string): InvestmentObjectiveType {
+  const lower = text.toLowerCase();
+  if (lower.includes('growth')) return 'growth';
+  if (lower.includes('income') || lower.includes('dividend')) return 'income';
+  if (lower.includes('preservation') || lower.includes('conservative')) return 'preservation';
+  if (lower.includes('speculation') || lower.includes('aggressive')) return 'speculation';
+  return 'balanced';
 }
 
-Query: "High dividend yield stocks, moderate risk, 10+ years"
-Response: {
-  "objective": "income",
-  "risk_tolerance": "moderate",
-  "horizon_years": 10,
-  "style_weights": {
-    "value": 30,
-    "growth": 10,
-    "momentum": 10,
-    "quality": 30,
-    "size": 10,
-    "volatility": 10
-  },
-  "gates": {
-    "min_dividend_yield": 3.0
-  }
+/**
+ * Map risk text to valid enum value
+ */
+function mapRiskTolerance(text: string): RiskToleranceType {
+  const lower = text.toLowerCase();
+  if (lower.includes('conservative')) return 'conservative';
+  if (lower.includes('aggressive')) return 'aggressive';
+  if (lower.includes('very_aggressive')) return 'very_aggressive';
+  return 'moderate';
 }
 
-Query: "AI companies, aggressive growth, short term"
-Response: {
-  "objective": "growth",
-  "risk_tolerance": "aggressive",
-  "horizon_years": 2,
-  "style_weights": {
-    "value": 5,
-    "growth": 50,
-    "momentum": 25,
-    "quality": 10,
-    "size": 5,
-    "volatility": 5
-  },
-  "gates": {
-    "sectors_include": ["Technology"],
-    "keywords": ["AI", "artificial intelligence", "machine learning"]
+/**
+ * Derive style weights based on objective and risk
+ */
+function deriveStyleWeights(objective: InvestmentObjectiveType, risk: RiskToleranceType): StyleWeightsType {
+  const base = {
+    value: 20,
+    growth: 20,
+    momentum: 20,
+    quality: 20,
+    size: 10,
+    volatility: 10
+  };
+
+  // Adjust based on objective
+  switch (objective) {
+    case 'growth':
+      base.growth = 40;
+      base.value = 10;
+      base.momentum = 25;
+      base.quality = 15;
+      break;
+    case 'income':
+      base.value = 40;
+      base.growth = 10;
+      base.quality = 30;
+      base.momentum = 10;
+      break;
+    case 'preservation':
+      base.quality = 40;
+      base.value = 30;
+      base.growth = 5;
+      base.momentum = 5;
+      base.volatility = 20;
+      break;
+    case 'speculation':
+      base.momentum = 40;
+      base.growth = 30;
+      base.value = 5;
+      base.quality = 15;
+      base.volatility = 10;
+      break;
   }
-}
 
-Query: "Safe investments, preserve capital, 5 years"
-Response: {
-  "objective": "preservation",
-  "risk_tolerance": "conservative",
-  "horizon_years": 5,
-  "style_weights": {
-    "value": 40,
-    "growth": 10,
-    "momentum": 5,
-    "quality": 35,
-    "size": 5,
-    "volatility": 5
-  },
-  "gates": {
-    "max_debt_to_equity": 0.5,
-    "min_roe": 10
+  // Adjust based on risk
+  switch (risk) {
+    case 'conservative':
+      base.quality += 10;
+      base.value += 10;
+      base.volatility += 10;
+      base.growth -= 10;
+      base.momentum -= 10;
+      break;
+    case 'aggressive':
+      base.growth += 10;
+      base.momentum += 10;
+      base.quality -= 10;
+      base.value -= 10;
+      break;
+    case 'very_aggressive':
+      base.momentum += 15;
+      base.growth += 15;
+      base.quality -= 15;
+      base.value -= 15;
+      break;
   }
-}
 
-Query: "Small cap value, US companies, 7 years"
-Response: {
-  "objective": "balanced",
-  "risk_tolerance": "moderate",
-  "horizon_years": 7,
-  "style_weights": {
-    "value": 50,
-    "growth": 15,
-    "momentum": 10,
-    "quality": 15,
-    "size": 5,
-    "volatility": 5
-  },
-  "gates": {
-    "market_cap_max_usd": 2000000000,
-    "countries_include": ["US"]
-  }
-}
-
-Now analyze this user query and extract their investment intent:`;
-
+  // Normalize to sum to 100
+  const sum = Object.values(base).reduce((acc, val) => acc + val, 0);
+  const factor = 100 / sum;
+  
   return {
-    system: systemPrompt,
-    user: userQuery
+    value: Math.round(base.value * factor),
+    growth: Math.round(base.growth * factor),
+    momentum: Math.round(base.momentum * factor),
+    quality: Math.round(base.quality * factor),
+    size: Math.round(base.size * factor),
+    volatility: Math.round(base.volatility * factor)
   };
 }
 
 /**
- * Validate and normalize AI response with Zod schema
+ * Derive gates from the original text
  */
-function validateAndNormalizeIntent(aiResponse: any): IntentType {
-  try {
-    // First, normalize style weights to sum to 100
-    if (aiResponse.style_weights) {
-      const weights = aiResponse.style_weights;
-      const sum = Object.values(weights).reduce((total: number, weight: any) => total + (weight || 0), 0);
-      
-      if (sum > 0) {
-        // Normalize to 100
-        Object.keys(weights).forEach(key => {
-          weights[key] = Math.round((weights[key] / sum) * 100);
-        });
-      } else {
-        // Use default weights if sum is 0
-        aiResponse.style_weights = {
-          value: 20,
-          growth: 20,
-          momentum: 20,
-          quality: 20,
-          size: 10,
-          volatility: 10
-        };
-      }
+function deriveGatesFromText(text: string): InvestmentGatesType {
+  const gates: InvestmentGatesType = {};
+  const lowerText = text.toLowerCase();
+
+  // Price constraints
+  const priceMatch = lowerText.match(/under \$?(\d+(?:\.\d+)?)|below \$?(\d+(?:\.\d+)?)|less than \$?(\d+(?:\.\d+)?)/);
+  if (priceMatch) {
+    const price = priceMatch[1] || priceMatch[2] || priceMatch[3];
+    if (price) {
+      gates.price_max = parseFloat(price);
     }
-
-    // Validate with Zod schema
-    const validatedIntent = validateIntent(aiResponse);
-    
-    return validatedIntent;
-
-  } catch (error) {
-    console.error('Intent validation failed:', error);
-    return getDefaultIntent();
   }
+
+  // Market cap constraints
+  if (lowerText.includes('small cap')) {
+    gates.max_market_cap = 2000000000; // $2B
+  }
+  if (lowerText.includes('large cap')) {
+    gates.min_market_cap = 10000000000; // $10B
+  }
+
+  // Sectors
+  const sectors: string[] = [];
+  if (lowerText.includes('tech') || lowerText.includes('software') || lowerText.includes('ai')) {
+    sectors.push('Technology');
+  }
+  if (lowerText.includes('finance') || lowerText.includes('banks')) {
+    sectors.push('Financial Services');
+  }
+  if (lowerText.includes('healthcare') || lowerText.includes('pharma')) {
+    sectors.push('Healthcare');
+  }
+  if (sectors.length > 0) {
+    gates.sectors = sectors;
+  }
+
+  return gates;
 }
 
 /**
- * Get default intent as fallback
+ * Default intent fallback
  */
 function getDefaultIntent(): IntentType {
   return {
