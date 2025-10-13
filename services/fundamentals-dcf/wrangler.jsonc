@@ -9,5 +9,8 @@
       "binding": "FUNDAMENTALS_SNAP",
       "id": "10125d4762c347debe6081447d73cd24"
     }
-  ]
+  ],
+  "vars": {
+    "DCF_SERVICE_URL": "http://localhost:8081"
+  }
 }
