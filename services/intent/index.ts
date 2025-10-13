@@ -118,21 +118,23 @@ async function extractIntent(request: Request, env: Env, corsHeaders: Record<str
 export async function extract(text: string, ai: Ai): Promise<IntentType> {
   try {
     // Concise role + constraints to keep output short and CPU low
-    const systemPrompt = 'You are a financial intent extractor for stock screening. Output exactly three tokens: objective,risk,pricecap. objective ∈ {growth,income,balanced,preservation,speculation}. risk ∈ {conservative,moderate,aggressive,very_aggressive}. pricecap is a single integer USD (e.g., 20,50,100) or 0 if unspecified. If the query is unrelated to stocks/investing, reply: invalid,invalid,0.';
+    const systemPrompt = 'You are a financial intent extractor. Extract ONLY three values: objective, risk, pricecap. Output format: "objective, risk, pricecap". Rules: (1) objective ∈ {growth,income,balanced,preservation,speculation}. (2) risk ∈ {conservative,moderate,aggressive,very_aggressive}. (3) pricecap = 0 UNLESS the query explicitly says "under $X" or "below X" or "less than X". DO NOT infer price from risk level.';
     const userPrompt = `Query: "${text}"
 
 Examples:
-growth stocks under $50 → growth, moderate, 50
-conservative dividend stocks → income, conservative, 0
-aggressive tech stocks under 20 → growth, aggressive, 20
-balanced portfolio → balanced, moderate, 0`;
+"growth stocks under $50" → growth, moderate, 50
+"conservative dividend stocks" → income, conservative, 0
+"aggressive tech stocks" → growth, aggressive, 0
+"balanced portfolio" → balanced, moderate, 0
+"value healthcare stocks" → preservation, conservative, 0
+"tech under 20" → growth, moderate, 20`;
 
     const response = await ai.run('@cf/meta/llama-3.1-8b-instruct-fp8-fast' as any, {
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ],
-      temperature: 0.1,
+      temperature: 0.05,
       max_tokens: 24 // keep extremely short
     });
 

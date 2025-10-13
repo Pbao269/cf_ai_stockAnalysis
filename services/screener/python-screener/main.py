@@ -59,13 +59,17 @@ def screen_stocks():
         # Prefer real data via Finviz if possible, fallback to mock
         if FINVIZ_AVAILABLE:
             try:
+                logger.info(f"FINVIZ_AVAILABLE=True, calling get_finviz_screener_results...")
                 results = get_finviz_screener_results(filters)
                 data_source = 'finviz+yfinance'
+                logger.info(f"✅ Finviz returned {len(results)} results")
             except Exception as finviz_err:
-                logger.warning(f"Finviz error, falling back to mock: {finviz_err}")
+                logger.warning(f"❌ Finviz error, falling back to mock: {finviz_err}")
+                logger.exception(finviz_err)
                 results = get_mock_screener_results(filters, style_weights)
                 data_source = 'mock'
         else:
+            logger.warning(f"FINVIZ_AVAILABLE=False, using mock data")
             results = get_mock_screener_results(filters, style_weights)
             data_source = 'mock'
         
@@ -226,16 +230,36 @@ def get_finviz_screener_results(filters: Dict[str, Any]) -> List[Dict[str, Any]]
     if not FINVIZ_AVAILABLE:
         raise RuntimeError("finvizfinance is not available")
 
-    # Map sectors - use Finviz sector strings
+    # Extract filter parameters
+    strategy = filters.get('strategy', 'balanced')
     sectors = filters.get('sectors') or []
     finviz_filters_dict = {}
     
+    logger.info(f"[get_finviz_screener_results] Input filters: {filters}")
+    
+    # Apply strategy-based defaults if no specific filters provided
+    # This ensures we always have at least one meaningful filter for Finviz
+    if strategy == 'income':
+        # For income strategy, filter for dividend-paying stocks
+        finviz_filters_dict['Dividend Yield'] = 'Positive (>0%)'
+        logger.info(f"[Finviz] Income strategy: adding Dividend Yield > 0%")
+    elif strategy == 'value':
+        # For value strategy, filter for reasonable P/E ratios
+        finviz_filters_dict['P/E'] = 'Under 20'
+        logger.info(f"[Finviz] Value strategy: adding P/E < 20")
+    elif strategy == 'growth':
+        # For growth strategy, filter for positive earnings growth
+        finviz_filters_dict['EPS growthpast 5 years'] = 'Positive (>0%)'
+        logger.info(f"[Finviz] Growth strategy: adding EPS growth > 0%")
+    # For balanced/momentum, we can leave filters open or add basic liquidity filter
+    
     if sectors:
-        # Map to Finviz sector names
+        # Map to Finviz sector names (overrides strategy defaults if specified)
         sector = sectors[0]
         finviz_sector = _map_sector_to_finviz_name(sector)
         if finviz_sector:
             finviz_filters_dict['Sector'] = finviz_sector
+            logger.info(f"[Finviz] Adding Sector filter: {finviz_sector}")
 
     # Price cap - Finviz uses signal filters
     price_max = filters.get('price_max')
@@ -261,9 +285,16 @@ def get_finviz_screener_results(filters: Dict[str, Any]) -> List[Dict[str, Any]]
         pass
 
     # Build and fetch
+    logger.info(f"[Finviz] Final filters_dict: {finviz_filters_dict or 'NO FILTERS (will return all stocks)'}")
     screener = Overview()
-    screener.set_filter(filters_dict=finviz_filters_dict if finviz_filters_dict else None)
+    # Finviz can handle empty dict {} to return all stocks, but NOT None
+    if finviz_filters_dict:
+        screener.set_filter(filters_dict=finviz_filters_dict)
+        logger.info(f"[Finviz] Filters set, calling screener_view...")
+    else:
+        logger.info(f"[Finviz] No filters, will return ALL stocks from Finviz...")
     df: pd.DataFrame = screener.screener_view(limit=100, verbose=0)
+    logger.info(f"[Finviz] ✅ Got DataFrame with {len(df)} rows")
 
     # Apply post-filters
     if price_max:

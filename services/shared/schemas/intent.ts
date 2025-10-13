@@ -113,26 +113,24 @@ export function convertIntentToSimplified(intent: IntentType): SimplifiedIntentT
     'balanced': 'balanced'
   };
 
-  // Map style weights to market cap preference
+  // Map style weights to market cap preference - RELAXED to avoid over-filtering
+  // Only set if there's a strong preference (> 0.25), otherwise leave undefined for broader results
   let marketCapPreference: 'small' | 'mid' | 'large' | 'mega' | undefined;
-  if (intent.style_weights.size > 0.30) {
+  if (intent.style_weights.size > 0.35) {
     marketCapPreference = 'small';
-  } else if (intent.style_weights.size > 0.20) {
+  } else if (intent.style_weights.size > 0.25) {
     marketCapPreference = 'mid';
-  } else if (intent.style_weights.size > 0.10) {
-    marketCapPreference = 'large';
-  } else {
-    marketCapPreference = 'mega';
   }
+  // Don't set large/mega caps unless explicitly needed - let Finviz return all sizes
 
-  // Map gates to dividend preference
+  // Map gates to dividend preference - RELAXED thresholds
   let dividendPreference: 'none' | 'low' | 'moderate' | 'high' | undefined;
   if (intent.gates?.min_dividend_yield) {
     const dividendYield = intent.gates.min_dividend_yield;
-    if (dividendYield > 0.04) dividendPreference = 'high';
-    else if (dividendYield > 0.025) dividendPreference = 'moderate';
-    else if (dividendYield > 0.015) dividendPreference = 'low';
-    else dividendPreference = 'none';
+    if (dividendYield > 0.03) dividendPreference = 'high';
+    else if (dividendYield > 0.02) dividendPreference = 'moderate';
+    else if (dividendYield > 0.01) dividendPreference = 'low';
+    // Don't set 'none' - just leave undefined
   }
 
   return {
