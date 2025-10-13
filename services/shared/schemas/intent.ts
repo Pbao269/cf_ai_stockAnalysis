@@ -60,7 +60,6 @@ export const InvestmentGates = z.strictObject({
 export const Intent = z.strictObject({
   objective: InvestmentObjective,
   risk_tolerance: RiskTolerance,
-  horizon_years: z.number().int().min(1).max(50),
   style_weights: StyleWeights,
   gates: InvestmentGates.optional(),
   
@@ -97,8 +96,6 @@ export const SimplifiedIntent = z.strictObject({
   market_cap_preference: z.enum(['small', 'mid', 'large', 'mega']).optional(),
   dividend_preference: z.enum(['none', 'low', 'moderate', 'high']).optional(),
   price_max: z.number().positive().optional(),
-  risk_tolerance: RiskTolerance,
-  horizon_years: z.number().int().min(1).max(50),
 });
 
 export type SimplifiedIntentType = z.infer<typeof SimplifiedIntent>;
@@ -118,11 +115,11 @@ export function convertIntentToSimplified(intent: IntentType): SimplifiedIntentT
 
   // Map style weights to market cap preference
   let marketCapPreference: 'small' | 'mid' | 'large' | 'mega' | undefined;
-  if (intent.style_weights.size > 30) {
+  if (intent.style_weights.size > 0.30) {
     marketCapPreference = 'small';
-  } else if (intent.style_weights.size > 20) {
+  } else if (intent.style_weights.size > 0.20) {
     marketCapPreference = 'mid';
-  } else if (intent.style_weights.size > 10) {
+  } else if (intent.style_weights.size > 0.10) {
     marketCapPreference = 'large';
   } else {
     marketCapPreference = 'mega';
@@ -144,7 +141,5 @@ export function convertIntentToSimplified(intent: IntentType): SimplifiedIntentT
     market_cap_preference: marketCapPreference,
     dividend_preference: dividendPreference,
     price_max: intent.gates?.max_price,
-    risk_tolerance: intent.risk_tolerance,
-    horizon_years: intent.horizon_years
   };
 }

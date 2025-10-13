@@ -75,6 +75,18 @@ async function extractIntent(request: Request, env: Env, corsHeaders: Record<str
       });
     }
 
+    // Lightweight guardrail: only proceed if query appears stock/investing-related
+    if (!isStockRelated(query)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'Query appears unrelated to stocks or investing',
+        code: 'UNRELATED_TOPIC'
+      }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+
     // Extract intent using AI with simplified approach
     const intent = await extract(query, env.AI);
     
@@ -105,28 +117,23 @@ async function extractIntent(request: Request, env: Env, corsHeaders: Record<str
  */
 export async function extract(text: string, ai: Ai): Promise<IntentType> {
   try {
-    // Simple prompt without JSON mode to minimize CPU usage
-    const simplePrompt = `Analyze this investment query and respond with just 3 words separated by commas: objective, risk, horizon.
-
-Query: "${text}"
+    // Concise role + constraints to keep output short and CPU low
+    const systemPrompt = 'You are a financial intent extractor for stock screening. Output exactly three tokens: objective,risk,pricecap. objective ∈ {growth,income,balanced,preservation,speculation}. risk ∈ {conservative,moderate,aggressive,very_aggressive}. pricecap is a single integer USD (e.g., 20,50,100) or 0 if unspecified. If the query is unrelated to stocks/investing, reply: invalid,invalid,0.';
+    const userPrompt = `Query: "${text}"
 
 Examples:
-"growth stocks" → growth, moderate, 5
-"conservative dividend stocks" → income, conservative, 10
-"aggressive tech stocks short term" → growth, aggressive, 1
-"balanced portfolio long term" → balanced, moderate, 10
+growth stocks under $50 → growth, moderate, 50
+conservative dividend stocks → income, conservative, 0
+aggressive tech stocks under 20 → growth, aggressive, 20
+balanced portfolio → balanced, moderate, 0`;
 
-Respond with only: objective,risk,horizon`;
-
-    const response = await ai.run('@cf/meta/llama-3.1-8b-instruct-fp8-fast', {
+    const response = await ai.run('@cf/meta/llama-3.1-8b-instruct-fp8-fast' as any, {
       messages: [
-        {
-          role: 'user',
-          content: simplePrompt
-        }
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
       ],
       temperature: 0.1,
-      max_tokens: 50 // Very short response to minimize CPU time
+      max_tokens: 24 // keep extremely short
     });
 
     // Parse the simple response
@@ -134,23 +141,28 @@ Respond with only: objective,risk,horizon`;
     console.log('AI Response Text:', responseText);
     
     // Parse the simple comma-separated response
-    const parts = responseText.trim().split(',').map(p => p.trim().toLowerCase());
+    const parts = responseText.trim().split(',').map((p: string) => p.trim().toLowerCase());
     
     if (parts.length >= 3) {
-      const [objective, risk, horizon] = parts;
+      const [objective, risk, pricecap] = parts;
+
+      // Guardrail from model contract
+      if (objective === 'invalid' && risk === 'invalid') {
+        throw new Error('Unrelated topic');
+      }
       
       // Map to valid enum values
       const mappedObjective = mapObjective(objective);
       const mappedRisk = mapRiskTolerance(risk);
-      const horizonYears = parseInt(horizon) || 5;
+      const priceCapNumber = Math.max(0, Math.floor(parseInt(pricecap) || 0));
       
       // Create intent with derived style weights
       const intent: IntentType = {
         objective: mappedObjective,
         risk_tolerance: mappedRisk,
-        horizon_years: Math.max(1, Math.min(50, horizonYears)),
         style_weights: deriveStyleWeights(mappedObjective, mappedRisk),
-        gates: deriveGatesFromText(text),
+        // Single source of truth for price cap: model cap overrides text-derived cap
+        gates: withPriceCap(deriveGatesFromText(text), priceCapNumber),
         source: 'AI'
       };
       
@@ -172,6 +184,38 @@ Respond with only: objective,risk,horizon`;
     fallbackIntent.source = 'Fallback';
     return fallbackIntent;
   }
+}
+
+/**
+ * Very small heuristic to check if a query is stock/investing related
+ */
+function isStockRelated(text: string): boolean {
+  const t = text.toLowerCase();
+  const keywords = [
+    'stock','stocks','equity','equities','share','shares','ticker','tickers',
+    'market','markets','nasdaq','nyse','sp500','s&p','invest','investing','portfolio',
+    'dividend','pe','p/e','earnings','revenue','sector','industry','finviz','yfinance','etf','ipo',
+    // Relaxed terms commonly used by users
+    'tech','technology','value','growth','income','momentum','balanced','small cap','large cap','mid cap'
+  ];
+  if (keywords.some(k => t.includes(k))) return true;
+
+  // Price-cap patterns (e.g., under $50, <$10, price < 20)
+  const pricePatterns = [
+    /under\s*\$?\s*\d+(?:\.\d+)?/,
+    /below\s*\$?\s*\d+(?:\.\d+)?/,
+    /\$\s*\d+(?:\.\d+)?/,
+    /price\s*[<≤]\s*\$?\s*\d+(?:\.\d+)?/
+  ];
+  if (pricePatterns.some((re) => re.test(t))) return true;
+
+  // Basic ticker-like token (e.g., AAPL, MSFT): allow mixed case tokens 1-5 letters with at least 2 uppercase
+  const tickerLike = /\b[A-Za-z]{1,5}\b/;
+  if (tickerLike.test(text)) {
+    const tokens = text.split(/\s+/);
+    if (tokens.some(tok => /[A-Z]/.test(tok) && tok.length <= 5)) return true;
+  }
+  return false;
 }
 
 /**
@@ -201,79 +245,82 @@ function mapRiskTolerance(text: string): RiskToleranceType {
  * Derive style weights based on objective and risk
  */
 function deriveStyleWeights(objective: InvestmentObjectiveType, risk: RiskToleranceType): StyleWeightsType {
+  // Start with equal weights in fractional form
   const base = {
-    value: 20,
-    growth: 20,
-    momentum: 20,
-    quality: 20,
-    size: 10,
-    volatility: 10
+    value: 0.20,
+    growth: 0.20,
+    momentum: 0.20,
+    quality: 0.20,
+    size: 0.10,
+    volatility: 0.10
   };
 
   // Adjust based on objective
   switch (objective) {
     case 'growth':
-      base.growth = 40;
-      base.value = 10;
-      base.momentum = 25;
-      base.quality = 15;
+      base.growth = 0.40;
+      base.value = 0.10;
+      base.momentum = 0.25;
+      base.quality = 0.15;
       break;
     case 'income':
-      base.value = 40;
-      base.growth = 10;
-      base.quality = 30;
-      base.momentum = 10;
+      base.value = 0.40;
+      base.growth = 0.10;
+      base.quality = 0.30;
+      base.momentum = 0.10;
       break;
     case 'preservation':
-      base.quality = 40;
-      base.value = 30;
-      base.growth = 5;
-      base.momentum = 5;
-      base.volatility = 20;
+      base.quality = 0.40;
+      base.value = 0.30;
+      base.growth = 0.05;
+      base.momentum = 0.05;
+      base.volatility = 0.20;
       break;
     case 'speculation':
-      base.momentum = 40;
-      base.growth = 30;
-      base.value = 5;
-      base.quality = 15;
-      base.volatility = 10;
+      base.momentum = 0.40;
+      base.growth = 0.30;
+      base.value = 0.05;
+      base.quality = 0.15;
+      base.volatility = 0.10;
       break;
   }
 
   // Adjust based on risk
   switch (risk) {
     case 'conservative':
-      base.quality += 10;
-      base.value += 10;
-      base.volatility += 10;
-      base.growth -= 10;
-      base.momentum -= 10;
+      base.quality += 0.10;
+      base.value += 0.10;
+      base.volatility += 0.10;
+      base.growth -= 0.10;
+      base.momentum -= 0.10;
       break;
     case 'aggressive':
-      base.growth += 10;
-      base.momentum += 10;
-      base.quality -= 10;
-      base.value -= 10;
+      base.growth += 0.10;
+      base.momentum += 0.10;
+      base.quality -= 0.10;
+      base.value -= 0.10;
       break;
     case 'very_aggressive':
-      base.momentum += 15;
-      base.growth += 15;
-      base.quality -= 15;
-      base.value -= 15;
+      base.momentum += 0.15;
+      base.growth += 0.15;
+      base.quality -= 0.15;
+      base.value -= 0.15;
       break;
   }
 
-  // Normalize to sum to 100
+  // Normalize to sum to 1
   const sum = Object.values(base).reduce((acc, val) => acc + val, 0);
-  const factor = 100 / sum;
-  
+  if (sum <= 0) {
+    return { value: 0.2, growth: 0.2, momentum: 0.2, quality: 0.2, size: 0.1, volatility: 0.1 };
+  }
+  const factor = 1 / sum;
   return {
-    value: Math.round(base.value * factor),
-    growth: Math.round(base.growth * factor),
-    momentum: Math.round(base.momentum * factor),
-    quality: Math.round(base.quality * factor),
-    size: Math.round(base.size * factor),
-    volatility: Math.round(base.volatility * factor)
+    value: Number((base.value * factor).toFixed(4)),
+    growth: Number((base.growth * factor).toFixed(4)),
+    momentum: Number((base.momentum * factor).toFixed(4)),
+    quality: Number((base.quality * factor).toFixed(4)),
+    size: Number((base.size * factor).toFixed(4)),
+    volatility: Number((base.volatility * factor).toFixed(4))
   };
 }
 
@@ -289,7 +336,7 @@ function deriveGatesFromText(text: string): InvestmentGatesType {
   if (priceMatch) {
     const price = priceMatch[1] || priceMatch[2] || priceMatch[3];
     if (price) {
-      gates.price_max = parseFloat(price);
+      gates.max_price = parseFloat(price);
     }
   }
 
@@ -319,6 +366,14 @@ function deriveGatesFromText(text: string): InvestmentGatesType {
   return gates;
 }
 
+// Merge a price cap from the model output into derived gates
+function withPriceCap(gates: InvestmentGatesType, priceCap: number): InvestmentGatesType {
+  if (priceCap && priceCap > 0) {
+    return { ...gates, max_price: priceCap };
+  }
+  return gates;
+}
+
 /**
  * Default intent fallback
  */
@@ -326,7 +381,6 @@ function getDefaultIntent(): IntentType {
   return {
     objective: 'balanced',
     risk_tolerance: 'moderate',
-    horizon_years: 5,
     style_weights: {
       value: 20,
       growth: 20,
