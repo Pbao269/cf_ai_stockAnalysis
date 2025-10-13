@@ -1,0 +1,11 @@
+version: '3.9'
+services:
+  python-screener:
+    build: .
+    image: python-screener:local
+    container_name: python-screener
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+    restart: unless-stopped

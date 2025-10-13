@@ -7,6 +7,7 @@ import {
   type ScreenHitType,
   type SectorAwareFiltersType
 } from '../shared/schemas/screen';
+import type { KVNamespace } from '@cloudflare/workers-types';
 import { 
   SimplifiedIntent, 
   convertIntentToSimplified,
@@ -16,6 +17,7 @@ import {
 
 export interface Env {
   SCREENER_INDEX: KVNamespace; // KV namespace for screener data caching
+  PY_SCREENER_URL?: string; // Optional: URL of Python screener service
 }
 
 /**
@@ -60,9 +62,10 @@ export default {
         });
       }
 
-      // For MVP, use mock data with realistic sector-specific P/E ratios
-      // In production, this would call the Python screener service
-      const screenerData = await getMockScreenerResults(filters);
+      // Prefer external Python screener if configured; otherwise use mock data
+      const screenerData = env.PY_SCREENER_URL
+        ? await getPythonScreenerResults(env, filters)
+        : await getMockScreenerResults(filters);
       
       // Convert to ScreenHit format with sector analysis
       const screenHits = screenerData.data.map((stock: any, index: number) => ({
@@ -94,6 +97,7 @@ export default {
           total_found: screenerData.total_found,
           filters_applied: screenerData.filters_applied,
           sector_adjustments: screenerData.sector_adjustments,
+          data_source: (screenerData as any).data_source || 'worker-mock', // Pass through from Python or indicate worker mock
           market_context: {
             sp500_pe: 30.289,
             sector_standards_applied: true
@@ -128,8 +132,9 @@ function convertIntentToFilters(intent: SimplifiedIntentType): ScreenFiltersType
     sectors: intent.sectors,
     dividend_preference: intent.dividend_preference,
     price_max: intent.price_max,
-    style_weights: getStyleWeightsForStrategy(intent.strategy),
+    style_checklist: getStyleWeightsForStrategy(intent.strategy),
     limit: 5,
+    offset: 0,
     include_rationale: true,
     include_sector_analysis: true
   };
@@ -239,7 +244,7 @@ function calculateSectorRelativeScore(stock: any): number {
  * Generate sector-aware rationale
  */
 function generateSectorAwareRationale(stock: any): string {
-  const drivers = [];
+  const drivers: string[] = [];
   const sector = stock.sector || 'Unknown';
   
   if (stock.pe_ratio && stock.sector_pe_benchmark) {
@@ -395,7 +400,7 @@ function calculateDividendScore(stock: any): number {
  * Get top drivers for the stock
  */
 function getTopDrivers(stock: any): string[] {
-  const drivers = [];
+  const drivers: string[] = [];
   
   if (stock.pe_ratio && stock.sector_pe_benchmark) {
     const ratio = stock.pe_ratio / stock.sector_pe_benchmark;
@@ -575,6 +580,51 @@ async function getMockScreenerResults(filters: ScreenFiltersType) {
     filters_applied: filters,
     sector_adjustments: getSectorAdjustments(filters)
   };
+}
+
+/**
+ * Call external Python screener service (if configured) and adapt its response
+ */
+async function getPythonScreenerResults(env: Env, filters: ScreenFiltersType) {
+  try {
+    const url = `${env.PY_SCREENER_URL!.replace(/\/$/, '')}/screen`;
+    const body = {
+      filters,
+      // Optional: pass style weights if desired; Python currently does not require
+      style_weights: {}
+    };
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      throw new Error(`Python screener HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    // Expected Python response shape:
+    // { success: boolean, data: Stock[], total_found: number, filters_applied: object, sector_adjustments: object }
+    if (data && data.success) {
+      return {
+        success: true,
+        data: data.data || [],
+        total_found: data.total_found ?? (data.data ? data.data.length : 0),
+        filters_applied: data.filters_applied ?? filters,
+        sector_adjustments: data.sector_adjustments ?? {}
+      };
+    }
+    // Fallback to empty result on unexpected shape
+    return {
+      success: true,
+      data: [],
+      total_found: 0,
+      filters_applied: filters,
+      sector_adjustments: {}
+    };
+  } catch (_err) {
+    // On error, fallback to mock results to preserve availability
+    return await getMockScreenerResults(filters);
+  }
 }
 
 /**

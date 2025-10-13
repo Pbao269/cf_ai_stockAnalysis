@@ -1,6 +1,5 @@
-flask==2.3.3
-pandas==2.1.1
-yfinance==0.2.18
-finvizfinance==0.14.0
-requests==2.31.0
-numpy==1.24.3
+flask>=3.0.0
+pandas>=2.2.0
+yfinance>=0.2.40
+gunicorn>=21.2.0
+finvizfinance>=0.14.8

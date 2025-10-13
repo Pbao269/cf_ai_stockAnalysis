@@ -3,6 +3,11 @@ import pandas as pd
 import yfinance as yf
 from typing import Dict, List, Any, Optional
 import logging
+try:
+    from finvizfinance.screener.overview import Overview  # type: ignore
+    FINVIZ_AVAILABLE = True
+except Exception:
+    FINVIZ_AVAILABLE = False
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -33,16 +38,29 @@ def screen_stocks():
         
         logger.info(f"Screening with filters: {filters}")
         
-        # For MVP, return realistic mock data based on strategy
-        # In production, this would integrate with finvizfinance
-        results = get_mock_screener_results(filters, style_weights)
+        # Track data source for transparency
+        data_source = 'mock'
+        
+        # Prefer real data via Finviz if possible, fallback to mock
+        if FINVIZ_AVAILABLE:
+            try:
+                results = get_finviz_screener_results(filters)
+                data_source = 'finviz+yfinance'
+            except Exception as finviz_err:
+                logger.warning(f"Finviz error, falling back to mock: {finviz_err}")
+                results = get_mock_screener_results(filters, style_weights)
+                data_source = 'mock'
+        else:
+            results = get_mock_screener_results(filters, style_weights)
+            data_source = 'mock'
         
         return jsonify({
             'success': True,
             'data': results,
             'total_found': len(results),
             'filters_applied': filters,
-            'sector_adjustments': get_sector_adjustments(filters)
+            'sector_adjustments': get_sector_adjustments(filters),
+            'data_source': data_source  # NEW: indicates real vs mock
         })
         
     except Exception as e:
@@ -185,6 +203,185 @@ def get_mock_screener_results(filters: Dict[str, Any], style_weights: Dict[str, 
     # Sort by overall score and return top 5
     scored_stocks.sort(key=lambda x: x['overall_score'], reverse=True)
     return scored_stocks[:5]
+
+def get_finviz_screener_results(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Fetch real tickers from Finviz and compute sector-aware scores.
+    Note: Finviz filter keys are best-effort; on failures we raise to trigger fallback.
+    """
+    if not FINVIZ_AVAILABLE:
+        raise RuntimeError("finvizfinance is not available")
+
+    # Map sectors - use Finviz sector strings
+    sectors = filters.get('sectors') or []
+    finviz_filters_dict = {}
+    
+    if sectors:
+        # Map to Finviz sector names
+        sector = sectors[0]
+        finviz_sector = _map_sector_to_finviz_name(sector)
+        if finviz_sector:
+            finviz_filters_dict['Sector'] = finviz_sector
+
+    # Price cap - Finviz uses signal filters
+    price_max = filters.get('price_max')
+    if isinstance(price_max, (int, float)) and price_max > 0:
+        # Finviz doesn't have direct price filters in screener_view, we'll filter post-fetch
+        pass
+
+    # Market cap preference
+    mcap = filters.get('market_cap_preference')
+    if mcap == 'small':
+        finviz_filters_dict['Market Cap.'] = 'Small ($300mln to $2bln)'
+    elif mcap == 'mid':
+        finviz_filters_dict['Market Cap.'] = 'Mid ($2bln to $10bln)'
+    elif mcap == 'large':
+        finviz_filters_dict['Market Cap.'] = 'Large ($10bln to $200bln)'
+    elif mcap == 'mega':
+        finviz_filters_dict['Market Cap.'] = 'Mega ($200bln and more)'
+
+    # Dividend preference
+    div_pref = filters.get('dividend_preference')
+    if div_pref in ('low', 'moderate', 'high'):
+        # Filter for positive dividends post-fetch
+        pass
+
+    # Build and fetch
+    screener = Overview()
+    screener.set_filter(filters_dict=finviz_filters_dict if finviz_filters_dict else None)
+    df: pd.DataFrame = screener.screener_view(limit=100, verbose=0)
+
+    # Apply post-filters
+    if price_max:
+        df = df[df['Price'].astype(float) <= price_max] if 'Price' in df.columns else df
+    
+    if div_pref in ('low', 'moderate', 'high'):
+        if 'Dividend %' in df.columns:
+            df = df[df['Dividend %'].astype(str).str.rstrip('%').astype(float, errors='ignore') > 0]
+
+    # Keep up to 50 rows to stay light
+    df = df.head(50)
+
+    # Normalize columns
+    columns = {c.lower().strip(): c for c in df.columns}
+    def get_col(name: str) -> Optional[str]:
+        for key in columns:
+            if name in key:
+                return columns[key]
+        return None
+
+    symbol_col = get_col('ticker') or get_col('symbol') or 'Ticker'
+    name_col = get_col('company') or 'Company'
+    sector_col = get_col('sector') or 'Sector'
+    industry_col = get_col('industry') or 'Industry'
+    price_col = get_col('price') or 'Price'
+    pe_col = get_col('p/e') or get_col('pe') or 'P/E'
+    pb_col = get_col('p/b') or get_col('pb') or 'P/B'
+    div_col = get_col('dividend') or get_col('div%') or 'Dividend %'
+    beta_col = get_col('beta') or 'Beta'
+
+    results: List[Dict[str, Any]] = []
+    for _, row in df.iterrows():
+        try:
+            symbol = str(row.get(symbol_col, '')).upper()
+            name = str(row.get(name_col, ''))
+            sector = str(row.get(sector_col, ''))
+            industry = str(row.get(industry_col, ''))
+            price = _to_float(row.get(price_col))
+            pe_ratio = _to_float(row.get(pe_col))
+            pb_ratio = _to_float(row.get(pb_col))
+            div_pct = _to_float(row.get(div_col))
+            beta = _to_float(row.get(beta_col))
+
+            # Optionally enrich with yfinance for missing pieces
+            if not beta or not price:
+                try:
+                    y = yf.Ticker(symbol)
+                    info = y.fast_info if hasattr(y, 'fast_info') else {}
+                    price = price or _to_float(getattr(info, 'last_price', None) or info.get('lastPrice'))
+                    beta = beta or _to_float((y.info or {}).get('beta'))
+                except Exception:
+                    pass
+
+            # Compute scores
+            sector_benchmark = SECTOR_PE_STANDARDS.get(sector, {'average': 30})
+            pe_score = calculate_pe_score(pe_ratio or 0, sector_benchmark['average'])
+            growth_score = calculate_growth_score(0.0)  # unknown; default neutral
+            value_score = calculate_value_score(pe_ratio or 0, pb_ratio or 0, sector_benchmark)
+            momentum_score = calculate_momentum_score(beta or 0)
+            dividend_score = calculate_dividend_score(div_pct or 0)
+
+            if filters.get('strategy') == 'growth':
+                overall_score = (growth_score * 0.4 + pe_score * 0.3 + momentum_score * 0.3)
+            elif filters.get('strategy') == 'value':
+                overall_score = (value_score * 0.5 + dividend_score * 0.3 + pe_score * 0.2)
+            elif filters.get('strategy') == 'income':
+                overall_score = (dividend_score * 0.6 + value_score * 0.3 + pe_score * 0.1)
+            elif filters.get('strategy') == 'momentum':
+                overall_score = (momentum_score * 0.5 + growth_score * 0.3 + pe_score * 0.2)
+            else:
+                overall_score = (pe_score * 0.25 + growth_score * 0.25 + value_score * 0.20 + momentum_score * 0.15 + dividend_score * 0.15)
+
+            results.append({
+                'symbol': symbol,
+                'name': name,
+                'sector': sector,
+                'industry': industry,
+                'market_cap': None,
+                'price': price,
+                'pe_ratio': pe_ratio,
+                'pb_ratio': pb_ratio,
+                'dividend_yield': div_pct,
+                'beta': beta,
+                'revenue_growth': None,
+                'overall_score': round(overall_score, 2),
+                'sector_pe_benchmark': sector_benchmark['average'],
+                'pe_score': pe_score,
+                'growth_score': growth_score,
+                'value_score': value_score,
+                'momentum_score': momentum_score,
+                'dividend_score': dividend_score
+            })
+        except Exception as _e:
+            continue
+
+    # Sort and top N similar to mock
+    results.sort(key=lambda x: x['overall_score'], reverse=True)
+    return results[:5]
+
+def _map_sector_to_finviz_name(sector: str) -> Optional[str]:
+    """Map our sector names to Finviz's exact sector filter values"""
+    s = (sector or '').lower()
+    mapping = {
+        'technology': 'Technology',
+        'healthcare': 'Healthcare',
+        'consumer defensive': 'Consumer Defensive',
+        'communication services': 'Communication Services',
+        'consumer cyclical': 'Consumer Cyclical',
+        'real estate': 'Real Estate',
+        'industrials': 'Industrials',
+        'basic materials': 'Basic Materials',
+        'energy': 'Energy',
+        'financial services': 'Financial Services',
+        'financial': 'Financial'
+    }
+    # Exact match first
+    if s in mapping:
+        return mapping[s]
+    # Fallback fuzzy
+    for key, val in mapping.items():
+        if key in s:
+            return val
+    return None
+
+def _to_float(x: Any) -> Optional[float]:
+    if x is None:
+        return None
+    try:
+        if isinstance(x, str):
+            x = x.replace('%', '').replace(',', '').strip()
+        return float(x)
+    except Exception:
+        return None
 
 def get_sector_pe_standards(sectors: List[str], strategy: str) -> Dict[str, float]:
     """Get P/E standards based on sectors and strategy"""
