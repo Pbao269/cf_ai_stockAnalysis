@@ -9,8 +9,7 @@
       "binding": "FUNDAMENTALS_SNAP",
       "id": "10125d4762c347debe6081447d73cd24"
     }
-  ],
-  "vars": {
-    "DCF_SERVICE_URL": "http://localhost:8081"
-  }
+  ]
+  // DCF_SERVICE_URL will be set via: wrangler secret put DCF_SERVICE_URL
+  // After deploying the Python DCF service to Render or similar
 }
