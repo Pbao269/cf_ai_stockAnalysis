@@ -15,6 +15,21 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+@app.route('/', methods=['GET'])
+def root():
+    """Root endpoint - service information"""
+    return jsonify({
+        'service': 'python-screener',
+        'version': '1.0.0',
+        'status': 'running',
+        'endpoints': {
+            'health': '/health',
+            'screen': '/screen (POST)'
+        },
+        'data_sources': ['finviz', 'yfinance'],
+        'timestamp': pd.Timestamp.now().isoformat()
+    })
+
 # Sector-specific P/E standards (2024 US market reality)
 SECTOR_PE_STANDARDS = {
     'Technology': {'growth': 80, 'value': 30, 'average': 70.91},
