@@ -588,6 +588,7 @@ async function getMockScreenerResults(filters: ScreenFiltersType) {
 async function getPythonScreenerResults(env: Env, filters: ScreenFiltersType) {
   try {
     const url = `${env.PY_SCREENER_URL!.replace(/\/$/, '')}/screen`;
+    console.log('Calling Python screener:', url);
     const body = {
       filters,
       // Optional: pass style weights if desired; Python currently does not require
@@ -598,10 +599,14 @@ async function getPythonScreenerResults(env: Env, filters: ScreenFiltersType) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
+    console.log('Python screener response status:', resp.status);
     if (!resp.ok) {
-      throw new Error(`Python screener HTTP ${resp.status}`);
+      const errorText = await resp.text();
+      console.error('Python screener error:', resp.status, errorText);
+      throw new Error(`Python screener HTTP ${resp.status}: ${errorText}`);
     }
     const data = await resp.json();
+    console.log('Python screener data_source:', (data as any).data_source);
     // Expected Python response shape:
     // { success: boolean, data: Stock[], total_found: number, filters_applied: object, sector_adjustments: object }
     if (data && data.success) {
@@ -610,19 +615,23 @@ async function getPythonScreenerResults(env: Env, filters: ScreenFiltersType) {
         data: data.data || [],
         total_found: data.total_found ?? (data.data ? data.data.length : 0),
         filters_applied: data.filters_applied ?? filters,
-        sector_adjustments: data.sector_adjustments ?? {}
+        sector_adjustments: data.sector_adjustments ?? {},
+        data_source: (data as any).data_source || 'python'
       };
     }
     // Fallback to empty result on unexpected shape
+    console.warn('Python screener returned unexpected shape');
     return {
       success: true,
       data: [],
       total_found: 0,
       filters_applied: filters,
-      sector_adjustments: {}
+      sector_adjustments: {},
+      data_source: 'python-empty'
     };
-  } catch (_err) {
+  } catch (err) {
     // On error, fallback to mock results to preserve availability
+    console.error('Python screener failed, using mock:', (err as Error).message);
     return await getMockScreenerResults(filters);
   }
 }
