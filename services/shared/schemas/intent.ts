@@ -87,3 +87,64 @@ export const validateIntent = (data: unknown): IntentType => {
 export const validateIntentSafe = (data: unknown) => {
   return Intent.safeParse(data);
 };
+
+/**
+ * Simplified intent for screener service integration
+ */
+export const SimplifiedIntent = z.strictObject({
+  strategy: z.enum(['growth', 'value', 'income', 'momentum', 'balanced']),
+  sectors: z.array(z.string()).optional(),
+  market_cap_preference: z.enum(['small', 'mid', 'large', 'mega']).optional(),
+  dividend_preference: z.enum(['none', 'low', 'moderate', 'high']).optional(),
+  price_max: z.number().positive().optional(),
+  risk_tolerance: RiskTolerance,
+  horizon_years: z.number().int().min(1).max(50),
+});
+
+export type SimplifiedIntentType = z.infer<typeof SimplifiedIntent>;
+
+/**
+ * Convert full Intent to SimplifiedIntent for screener service
+ */
+export function convertIntentToSimplified(intent: IntentType): SimplifiedIntentType {
+  // Map objective to strategy
+  const strategyMap: Record<InvestmentObjectiveType, 'growth' | 'value' | 'income' | 'momentum' | 'balanced'> = {
+    'growth': 'growth',
+    'income': 'income',
+    'preservation': 'value',
+    'speculation': 'momentum',
+    'balanced': 'balanced'
+  };
+
+  // Map style weights to market cap preference
+  let marketCapPreference: 'small' | 'mid' | 'large' | 'mega' | undefined;
+  if (intent.style_weights.size > 30) {
+    marketCapPreference = 'small';
+  } else if (intent.style_weights.size > 20) {
+    marketCapPreference = 'mid';
+  } else if (intent.style_weights.size > 10) {
+    marketCapPreference = 'large';
+  } else {
+    marketCapPreference = 'mega';
+  }
+
+  // Map gates to dividend preference
+  let dividendPreference: 'none' | 'low' | 'moderate' | 'high' | undefined;
+  if (intent.gates?.min_dividend_yield) {
+    const dividendYield = intent.gates.min_dividend_yield;
+    if (dividendYield > 0.04) dividendPreference = 'high';
+    else if (dividendYield > 0.025) dividendPreference = 'moderate';
+    else if (dividendYield > 0.015) dividendPreference = 'low';
+    else dividendPreference = 'none';
+  }
+
+  return {
+    strategy: strategyMap[intent.objective],
+    sectors: intent.gates?.sectors,
+    market_cap_preference: marketCapPreference,
+    dividend_preference: dividendPreference,
+    price_max: intent.gates?.max_price,
+    risk_tolerance: intent.risk_tolerance,
+    horizon_years: intent.horizon_years
+  };
+}

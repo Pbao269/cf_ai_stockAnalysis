@@ -1,0 +1,146 @@
+{
+  "buffett": {
+    "name": "Warren Buffett Value (Sector-Aware)",
+    "description": "Large cap, sector-relative low P/E, high ROE, stable dividend",
+    "filters": {
+      "strategy": "value",
+      "market_cap_preference": "large",
+      "dividend_preference": "moderate",
+      "sectors": ["Financial Services", "Consumer Defensive", "Healthcare"]
+    },
+    "style_weights": {
+      "value_criteria": {
+        "pe_ratio_max": 20,
+        "pb_ratio_max": 2.0,
+        "dividend_yield_min": 2.0
+      },
+      "quality_criteria": {
+        "roe_min": 0.15,
+        "current_ratio_min": 1.5
+      }
+    },
+    "sector_adjustments": true
+  },
+  "lynch": {
+    "name": "Peter Lynch GARP (Sector-Aware)",
+    "description": "Growth at reasonable price with sector context",
+    "filters": {
+      "strategy": "growth",
+      "market_cap_preference": "mid",
+      "sectors": ["Technology", "Healthcare", "Consumer Cyclical"]
+    },
+    "style_weights": {
+      "growth_criteria": {
+        "revenue_growth_min": 0.15,
+        "earnings_growth_min": 0.20
+      },
+      "value_criteria": {
+        "pe_ratio_max": 30,
+        "pb_ratio_max": 3.0
+      }
+    },
+    "sector_adjustments": true
+  },
+  "tech_growth": {
+    "name": "Technology Growth (Realistic)",
+    "description": "Tech growth with realistic P/E standards",
+    "filters": {
+      "strategy": "growth",
+      "sectors": ["Technology"],
+      "market_cap_preference": "large"
+    },
+    "style_weights": {
+      "growth_criteria": {
+        "revenue_growth_min": 0.20,
+        "earnings_growth_min": 0.25
+      },
+      "value_criteria": {
+        "pe_ratio_max": 80,
+        "pb_ratio_max": 8.0
+      }
+    },
+    "sector_adjustments": true
+  },
+  "healthcare_value": {
+    "name": "Healthcare Value (Realistic)",
+    "description": "Healthcare value with realistic P/E standards",
+    "filters": {
+      "strategy": "value",
+      "sectors": ["Healthcare"],
+      "dividend_preference": "moderate"
+    },
+    "style_weights": {
+      "value_criteria": {
+        "pe_ratio_max": 50,
+        "pb_ratio_max": 3.0,
+        "dividend_yield_min": 2.0
+      },
+      "quality_criteria": {
+        "roe_min": 0.12
+      }
+    },
+    "sector_adjustments": true
+  },
+  "income_focused": {
+    "name": "Income Focused (Sector-Aware)",
+    "description": "High dividend yield with sector-relative valuation",
+    "filters": {
+      "strategy": "income",
+      "dividend_preference": "high",
+      "sectors": ["Consumer Defensive", "Utilities", "Real Estate"]
+    },
+    "style_weights": {
+      "value_criteria": {
+        "dividend_yield_min": 3.5,
+        "pe_ratio_max": 25
+      },
+      "quality_criteria": {
+        "roe_min": 0.10,
+        "current_ratio_min": 1.2
+      }
+    },
+    "sector_adjustments": true
+  },
+  "momentum_trading": {
+    "name": "Momentum Trading (Sector-Aware)",
+    "description": "High beta, growth momentum with sector context",
+    "filters": {
+      "strategy": "momentum",
+      "sectors": ["Technology", "Consumer Cyclical", "Communication Services"]
+    },
+    "style_weights": {
+      "momentum_criteria": {
+        "price_momentum_3m_min": 0.10
+      },
+      "growth_criteria": {
+        "revenue_growth_min": 0.15
+      }
+    },
+    "sector_adjustments": true
+  },
+  "balanced_portfolio": {
+    "name": "Balanced Portfolio (Sector-Aware)",
+    "description": "Diversified approach with sector-relative metrics",
+    "filters": {
+      "strategy": "balanced",
+      "market_cap_preference": "large",
+      "dividend_preference": "moderate"
+    },
+    "style_weights": {
+      "value_criteria": {
+        "pe_ratio_max": 25,
+        "pb_ratio_max": 2.5,
+        "dividend_yield_min": 1.5
+      },
+      "growth_criteria": {
+        "revenue_growth_min": 0.05,
+        "earnings_growth_min": 0.08
+      },
+      "quality_criteria": {
+        "roe_min": 0.12,
+        "current_ratio_min": 1.2
+      }
+    },
+    "sector_adjustments": true
+  }
+}

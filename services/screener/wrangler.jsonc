@@ -9,5 +9,8 @@
       "binding": "SCREENER_INDEX",
       "id": "0030f6f797674f98b552ea23df6d6797"
     }
-  ]
+  ],
+  "vars": {
+    "ENVIRONMENT": "mvp"
+  }
 }
