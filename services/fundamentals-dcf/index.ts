@@ -18,9 +18,8 @@ interface KVNamespace {
   put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
 }
 
-interface Ai {
-  run(model: string, input: any): Promise<any>;
-}
+// Use proper Cloudflare Workers AI type
+// The Ai interface is provided by Cloudflare Workers runtime
 
 export interface Env {
   FUNDAMENTALS_SNAP: KVNamespace;
@@ -90,13 +89,45 @@ export default {
         status: 'healthy',
         service: 'unified-dcf-gateway',
         services_connected: {
-          unified_dcf: !!env.UNIFIED_DCF_URL
+          unified_dcf: !!env.UNIFIED_DCF_URL,
+          ai: !!env.AI
         },
         note: 'SOTP model disabled (requires EDGAR data)',
         timestamp: new Date().toISOString()
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
+    }
+
+    // AI test endpoint
+    if (url.pathname === '/test-ai') {
+      try {
+        if (!env.AI) {
+          return new Response(JSON.stringify({ error: 'AI binding not available' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          });
+        }
+        
+        const res = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
+          prompt: 'Say hello in one word.'
+        });
+        
+        return new Response(JSON.stringify({ 
+          ai_response: (res as any)?.response || 'No response',
+          ai_available: true 
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      } catch (e) {
+        return new Response(JSON.stringify({ 
+          error: e instanceof Error ? e.message : 'AI test failed',
+          ai_available: false 
+        }), {
+          status: 500,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        });
+      }
     }
 
     // Only accept POST requests for DCF analysis
@@ -118,6 +149,8 @@ export default {
       
       const ticker = (body.ticker || '').toUpperCase();
       
+      console.log(`[Unified-DCF] Starting request for ticker: ${ticker}`);
+      
       if (!ticker) {
         return new Response(JSON.stringify({
           success: false,
@@ -127,6 +160,8 @@ export default {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
       }
+
+      console.log(`[Unified-DCF] Processing ticker: ${ticker}`);
 
       // Check cache first
       const cacheKey = `unified-dcf:${ticker}`;
@@ -191,6 +226,8 @@ export default {
       }
 
       const unifiedData = unifiedResult.data;
+      console.log(`[Unified-DCF] Unified service response received for ${ticker}`);
+      
       const modelResults = unifiedData.individual_valuations.map((valuation: any) => ({
         model: valuation.model,
         result: valuation
@@ -199,6 +236,8 @@ export default {
       if (modelResults.length === 0) {
         throw new Error('Unified DCF service returned no results');
       }
+
+      console.log(`[Unified-DCF] Found ${modelResults.length} model results for ${ticker}`);
 
       // === STEP 3: Use Unified Results ===
       console.log(`[Unified-DCF] Step 3: Using unified consensus results`);
@@ -215,7 +254,7 @@ export default {
       const finalResult = {
         ticker,
         current_price: fundamentals.current_price,
-        individual_valuations: modelResults.map(({ model, result }) => ({
+        individual_valuations: modelResults.map(({ model, result }: { model: string; result: any }) => ({
           model,
           model_name: result.model_name || (model === '3stage' ? '3-Stage DCF (Goldman Sachs)' : 'H-Model DCF (Morningstar)'),
           price_per_share: result.price_per_share,
@@ -236,7 +275,8 @@ export default {
           method: consensusValuation.method || 'Equal weight average of available models'
         },
         recommendation,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        debug_ai_binding: !!env.AI  // Debug field to check if AI binding exists
       } as any;
 
       // Attach analyst consensus for UI (from fundamentals data service)
@@ -251,23 +291,45 @@ export default {
         };
       }
 
-      // AI: Explain gap between DCF and analyst consensus (company-tailored)
+      console.log(`[Unified-DCF] About to start AI analysis for ${ticker}`);
+      
+      // AI: Explain gap between DCF and analyst consensus (CPU optimized)
       try {
-        if (finalResult.analyst_consensus && env.AI) {
-          finalResult.explanation = await explainGapWithAI(env.AI, {
+        console.log('[AI] Checking AI binding:', !!env.AI);
+        if (env.AI) {
+          console.log('[AI] Starting AI analysis for', ticker);
+          
+          // Simple test first
+          console.log('[AI] Running simple test...');
+          const testRes = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
+            prompt: 'Say "AI working" in one word.'
+          });
+          
+          console.log('[AI] Test response:', testRes);
+          finalResult.ai_test = (testRes as any)?.response || 'No test response';
+          
+          // Now try the full analysis
+          console.log('[AI] Running full analysis...');
+          finalResult.ai_raw_response = await explainGapWithAI(env.AI, {
             ticker,
             company_name: fundamentals.company_name,
             sector: fundamentals.sector,
             current_price: fundamentals.current_price,
-            analyst_avg_target: analystAvgTarget,
+            analyst_avg_target: analystAvgTarget || fundamentals.current_price * 1.1, // Fallback if no analyst data
             dcf_weighted_fair_value: weightedFairValue,
-            three_stage: modelResults.find(r => r.model === '3stage')?.result,
-            hmodel: modelResults.find(r => r.model === 'hmodel')?.result,
+            three_stage: modelResults.find((r: any) => r.model === '3stage')?.result,
+            hmodel: modelResults.find((r: any) => r.model === 'hmodel')?.result,
             fundamentals
           });
+          console.log('[AI] AI analysis completed for', ticker);
+        } else {
+          console.log('[AI] Skipping AI analysis - no AI binding');
+          finalResult.ai_status = 'skipped - no AI binding';
         }
       } catch (e) {
         console.warn('[Unified-DCF] AI gap explanation failed:', e);
+        finalResult.ai_error = e instanceof Error ? e.message : 'AI processing failed';
+        finalResult.ai_status = 'failed';
       }
 
       // Cache the result (1 hour TTL)
@@ -320,68 +382,43 @@ async function explainGapWithAI(ai: Ai, input: {
   three_stage?: any;
   hmodel?: any;
   fundamentals: any;
-}): Promise<{ summary: string; key_factors: string[]; cautionary_notes: string[] } | undefined> {
+}): Promise<string> {
+  console.log('[AI] explainGapWithAI called with:', input.ticker);
+  
   const { ticker, company_name, sector, current_price, analyst_avg_target, dcf_weighted_fair_value, three_stage, hmodel, fundamentals } = input;
 
-  // Extract key signals for the prompt
-  const histGrowth = Number((fundamentals.revenue_cagr_3y || 0) * 100).toFixed(1);
-  const analystGrowth = Number((fundamentals.analyst_revenue_growth_3y || 0) * 100).toFixed(1);
-  const ebitdaMargin = Number((fundamentals.ebitda_margin || 0) * 100).toFixed(1);
-  const fcfMargin = Number((fundamentals.fcf_margin || 0) * 100).toFixed(1);
-  const moat = String(fundamentals.economic_moat || 'unknown');
-  const moatScore = Number(fundamentals.moat_strength_score || 0).toFixed(0);
+  // CPU-optimized: Minimal string operations, no heavy parsing
+  const histGrowth = Math.round((fundamentals.revenue_cagr_3y || 0) * 1000) / 10;
+  const analystGrowth = Math.round((fundamentals.analyst_revenue_growth_3y || 0) * 1000) / 10;
+  const ebitdaMargin = Math.round((fundamentals.ebitda_margin || 0) * 1000) / 10;
+  const fcfMargin = Math.round((fundamentals.fcf_margin || 0) * 1000) / 10;
+  const moat = fundamentals.economic_moat || 'unknown';
+  const moatScore = Math.round(fundamentals.moat_strength_score || 0);
 
-  const threeStagePrice = three_stage?.price_per_share;
-  const hmodelPrice = hmodel?.price_per_share;
-  const threeStageWacc = three_stage?.wacc;
-  const hmodelWacc = hmodel?.wacc;
+  const threeStagePrice = three_stage?.price_per_share || 0;
+  const hmodelPrice = hmodel?.price_per_share || 0;
+  const threeStageWacc = three_stage?.wacc || 0;
+  const hmodelWacc = hmodel?.wacc || 0;
   const terminalGrowth = Math.max(
-    Number(three_stage?.assumptions?.terminal_growth || 0),
-    Number(hmodel?.assumptions?.g_low || 0)
+    three_stage?.assumptions?.terminal_growth || 0,
+    hmodel?.assumptions?.g_low || 0
   );
 
-  const prompt = `You are a senior equity research analyst. Explain concisely why the analyst consensus price target can differ from a purely mechanical DCF for the specific company below. Be concrete, use the company's fundamentals, and list 3-6 most relevant factors. Avoid generic platitudes.
+  // Simplified prompt - no complex string formatting
+  const prompt = `Analyze ${ticker} (${company_name || 'Unknown'}) valuation gap:
+Current: $${current_price.toFixed(0)} | Analyst: $${analyst_avg_target.toFixed(0)} | DCF: $${dcf_weighted_fair_value.toFixed(0)}
+3-Stage: $${threeStagePrice.toFixed(0)} (WACC ${(threeStageWacc * 100).toFixed(0)}%) | H-Model: $${hmodelPrice.toFixed(0)} (WACC ${(hmodelWacc * 100).toFixed(0)}%)
+Growth: ${histGrowth}% hist, ${analystGrowth}% analyst | Margins: ${ebitdaMargin}% EBITDA, ${fcfMargin}% FCF | Moat: ${moat} (${moatScore}/100)
+Explain the gap in 2-3 sentences.`;
 
-Company: ${company_name || ticker} (${ticker})
-Sector: ${sector || 'Unknown'}
-Current price: $${current_price.toFixed(2)}
-Analyst avg target: $${analyst_avg_target.toFixed(2)}
-DCF weighted fair value: $${dcf_weighted_fair_value.toFixed(2)}
+  console.log('[AI] Sending prompt to AI:', prompt.substring(0, 100) + '...');
+  
+  const res = await ai.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
+    prompt: prompt
+  });
 
-Model snapshots:
-- 3-Stage DCF: price $${threeStagePrice?.toFixed?.(2) || 'N/A'}, WACC ${(threeStageWacc ? (threeStageWacc * 100).toFixed(1) + '%' : 'N/A')}
-- H-Model:     price $${hmodelPrice?.toFixed?.(2) || 'N/A'}, WACC ${(hmodelWacc ? (hmodelWacc * 100).toFixed(1) + '%' : 'N/A')}
-
-Key fundamentals:
-- 3Y Revenue CAGR: ${histGrowth}%  | Analyst 3Y growth: ${analystGrowth}%
-- EBITDA margin: ${ebitdaMargin}%   | FCF margin: ${fcfMargin}%
-- Moat: ${moat} (score ${moatScore}/100)
-- Terminal growth used: ${(terminalGrowth * 100).toFixed(1)}%
-
-Guidance for analysis:
-- If analysts are above DCF: discuss non-modeled optionality (AI product cycles, pricing power, mix shift, TAM expansion, share gains), longer high-growth duration, strategic CapEx ROI, or lower implicit discount rate from quality/sentiment.
-- If analysts are below DCF: discuss execution risks, regulation, margin sustainability, competition, cyclicality, or overly optimistic model assumptions.
-- Tie each factor explicitly to the company's metrics above (growth, margins, moat), and state in plain English.
-
-Output JSON with fields: {"summary": string, "key_factors": string[], "cautionary_notes": string[]}. Keep it concise, high-signal, and company-specific.`;
-
-  const res = await ai.run('@cf/meta/llama-3-8b-instruct', {
-    messages: [
-      { role: 'system', content: 'You are a precise, senior equity analyst. Answer briefly and concretely.' },
-      { role: 'user', content: prompt }
-    ],
-    temperature: 0.2,
-    max_tokens: 220
-  } as any);
-
-  let text = (res as any)?.response || '';
-  text = text.replace(/^```json\n?|```$/g, '').trim();
-  try {
-    const parsed = JSON.parse(text);
-    // Minimal validation
-    if (parsed && typeof parsed.summary === 'string' && Array.isArray(parsed.key_factors)) {
-      return parsed;
-    }
-  } catch (_) {}
-  return { summary: 'Analyst consensus reflects qualitative expectations and risk premia not fully captured by DCF.', key_factors: [], cautionary_notes: [] };
+  console.log('[AI] AI response received:', res);
+  
+  // Return raw response - no parsing, no JSON processing
+  return (res as any)?.response || 'AI analysis unavailable';
 }

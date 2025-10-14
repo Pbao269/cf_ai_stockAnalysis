@@ -9,11 +9,13 @@
       "binding": "FUNDAMENTALS_SNAP",
       "id": "10125d4762c347debe6081447d73cd24"
     }
-  ]
-  // Service URLs will be set via wrangler secrets after deploying to Render:
-  // npx wrangler secret put UNIFIED_DCF_URL
-  // npx wrangler secret put AI
-  // 
+  ],
+  "vars": {
+    "UNIFIED_DCF_URL": "https://fundamental-dcf.onrender.com"
+  },
+  "ai": {
+    "binding": "AI"
+  }
   // Note: SOTP model is disabled (requires EDGAR segment data)
   // Unified service combines data fetching, 3-stage, and H-model DCF
 }
