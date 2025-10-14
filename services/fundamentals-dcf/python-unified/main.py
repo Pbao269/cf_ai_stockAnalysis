@@ -287,6 +287,25 @@ def run_unified_dcf():
         # Generate recommendation
         recommendation = generate_recommendation(upside_to_weighted)
         
+        # Prepare analyst consensus data
+        analyst_consensus = None
+        analyst_avg_target = fundamentals.get('analyst_avg_target', 0)
+        analyst_count = fundamentals.get('analyst_count', 0)
+        
+        if analyst_avg_target > 0 and analyst_count > 0:
+            gap_vs_weighted = analyst_avg_target - weighted_fair_value
+            gap_vs_weighted_pct = (gap_vs_weighted / current_price) * 100 if current_price > 0 else 0
+            
+            analyst_consensus = {
+                'average_target_price': analyst_avg_target,
+                'analyst_count': analyst_count,
+                'gap_vs_weighted': gap_vs_weighted,
+                'gap_vs_weighted_pct': gap_vs_weighted_pct,
+                'analyst_ratings': fundamentals.get('analyst_ratings', {}),
+                'analyst_revenue_growth_1y': fundamentals.get('analyst_revenue_growth_1y', 0),
+                'analyst_revenue_growth_3y': fundamentals.get('analyst_revenue_growth_3y', 0)
+            }
+        
         unified_result = {
             'ticker': ticker,
             'current_price': current_price,
@@ -316,6 +335,10 @@ def run_unified_dcf():
             'recommendation': recommendation,
             'timestamp': datetime.now().isoformat()
         }
+        
+        # Add analyst consensus if available
+        if analyst_consensus:
+            unified_result['analyst_consensus'] = analyst_consensus
         
         return jsonify({
             'success': True,
@@ -376,6 +399,32 @@ def fetch_fundamentals_snapshot(ticker: str) -> Dict[str, Any]:
         ebit = _safe_get(income_stmt, 'EBIT', operating_income)
         ebitda = _safe_get(income_stmt, 'EBITDA', 0)
         net_income = _safe_get(income_stmt, 'Net Income', 0)
+        
+        # === IMPROVED EBITDA CALCULATION ===
+        # If EBITDA is missing but we have EBIT and D&A, calculate it
+        if ebitda == 0 and ebit != 0:
+            depreciation_amortization = abs(_safe_get(cashflow, 'Depreciation And Amortization', 0))
+            if depreciation_amortization > 0:
+                ebitda = ebit + depreciation_amortization
+                logger.info(f"[{ticker}] Calculated EBITDA from EBIT + D&A: {ebitda:,.0f}")
+        
+        # If EBITDA is still 0 but we have net income, estimate from net income
+        if ebitda == 0 and net_income != 0:
+            # Rough estimate: EBITDA ≈ Net Income * 1.5 (assuming taxes, interest, D&A)
+            ebitda = net_income * 1.5
+            logger.info(f"[{ticker}] Estimated EBITDA from Net Income: {ebitda:,.0f}")
+        
+        # === IMPROVED OPERATING INCOME CALCULATION ===
+        # If Operating Income is missing but we have EBIT, use EBIT
+        if operating_income == 0 and ebit != 0:
+            operating_income = ebit
+            logger.info(f"[{ticker}] Using EBIT as Operating Income: {operating_income:,.0f}")
+        
+        # If Operating Income is still 0 but we have net income, estimate
+        if operating_income == 0 and net_income != 0:
+            # Rough estimate: Operating Income ≈ Net Income * 1.3 (assuming taxes and interest)
+            operating_income = net_income * 1.3
+            logger.info(f"[{ticker}] Estimated Operating Income from Net Income: {operating_income:,.0f}")
         
         # === CASH FLOW STATEMENT ===
         operating_cash_flow = _safe_get(cashflow, 'Operating Cash Flow', 0)
