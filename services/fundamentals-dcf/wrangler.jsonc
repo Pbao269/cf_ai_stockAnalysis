@@ -9,13 +9,11 @@
       "binding": "FUNDAMENTALS_SNAP",
       "id": "10125d4762c347debe6081447d73cd24"
     }
-  ],
-  "ai": {
-    "binding": "AI"
-  }
-  // Service URLs will be set via wrangler secrets after deployment:
-  // npx wrangler secret put DATA_SERVICE_URL
-  // npx wrangler secret put DCF_3STAGE_URL
-  // npx wrangler secret put DCF_SOTP_URL
-  // npx wrangler secret put DCF_HMODEL_URL
+  ]
+  // Service URLs will be set via wrangler secrets after deploying to Render:
+  // npx wrangler secret put UNIFIED_DCF_URL
+  // npx wrangler secret put AI
+  // 
+  // Note: SOTP model is disabled (requires EDGAR segment data)
+  // Unified service combines data fetching, 3-stage, and H-model DCF
 }
