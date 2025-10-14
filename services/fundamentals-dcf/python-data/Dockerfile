@@ -11,8 +11,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-ENV PORT=8081
-EXPOSE 8081
+ENV PORT=8082
+EXPOSE 8082
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8081", "--workers", "2", "--timeout", "120", "--access-logfile", "-", "main:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:8082", "--workers", "2", "--timeout", "120", "--access-logfile", "-", "main:app"]
 
