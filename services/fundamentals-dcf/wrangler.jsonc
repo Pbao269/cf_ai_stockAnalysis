@@ -9,7 +9,13 @@
       "binding": "FUNDAMENTALS_SNAP",
       "id": "10125d4762c347debe6081447d73cd24"
     }
-  ]
-  // DCF_SERVICE_URL will be set via: wrangler secret put DCF_SERVICE_URL
-  // After deploying the Python DCF service to Render or similar
+  ],
+  "ai": {
+    "binding": "AI"
+  }
+  // Service URLs will be set via wrangler secrets after deployment:
+  // npx wrangler secret put DATA_SERVICE_URL
+  // npx wrangler secret put DCF_3STAGE_URL
+  // npx wrangler secret put DCF_SOTP_URL
+  // npx wrangler secret put DCF_HMODEL_URL
 }

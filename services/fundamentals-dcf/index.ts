@@ -1,18 +1,63 @@
 /**
- * Fundamentals & DCF Service - Cloudflare Worker
+ * Multi-Model DCF Valuation Service - Cloudflare Worker
  * 
- * This Worker proxies requests to the Python DCF microservice which:
- * 1. Fetches fundamentals from yfinance
- * 2. Runs deterministic DCF calculations
- * 3. Generates base/bull/bear scenarios
- * 4. Provides sensitivity analysis
+ * Architecture:
+ * 1. Fetch fundamentals from centralized data service
+ * 2. Use AI (Cloudflare Workers AI) to select optimal DCF model(s)
+ * 3. Run selected models in parallel (3-Stage, SOTP, H-Model)
+ * 4. Aggregate results with weighted fair value
+ * 5. Generate final recommendation
  */
 
 import { validateDcfOutput, type DcfOutputType } from '../shared/schemas/dcf';
 
 export interface Env {
   FUNDAMENTALS_SNAP: KVNamespace;
-  DCF_SERVICE_URL?: string;  // URL of Python DCF service
+  AI: Ai;  // Cloudflare AI binding
+  DATA_SERVICE_URL?: string;  // Centralized data service
+  DCF_3STAGE_URL?: string;  // 3-Stage DCF model
+  DCF_SOTP_URL?: string;    // SOTP model
+  DCF_HMODEL_URL?: string;  // H-Model DCF
+}
+
+interface FundamentalsSnapshot {
+  ticker: string;
+  company_name: string;
+  sector: string;
+  industry: string;
+  revenue: number;
+  revenue_by_segment?: Array<{
+    segment_name: string;
+    revenue: number;
+    operating_income: number;
+    margin: number;
+  }>;
+  revenue_cagr_3y: number;
+  ebitda_margin: number;
+  market_cap: number;
+  current_price: number;
+  [key: string]: any;
+}
+
+interface ModelSelectorOutput {
+  recommended_models: ('3stage' | 'sotp' | 'hmodel')[];
+  reasoning: string;
+  confidence: number;
+  weights: {
+    '3stage'?: number;
+    'sotp'?: number;
+    'hmodel'?: number;
+  };
+}
+
+interface IndividualValuation {
+  model: string;
+  price_per_share: number;
+  enterprise_value: number;
+  upside_downside: number;
+  wacc: number;
+  assumptions?: any;
+  [key: string]: any;
 }
 
 const corsHeaders = {
@@ -34,8 +79,14 @@ export default {
     if (url.pathname === '/health') {
       return new Response(JSON.stringify({
         status: 'healthy',
-        service: 'fundamentals-dcf',
-        dcf_service_available: !!env.DCF_SERVICE_URL,
+        service: 'multi-model-dcf',
+        models: {
+          data_service: !!env.DATA_SERVICE_URL,
+          three_stage: !!env.DCF_3STAGE_URL,
+          sotp: !!env.DCF_SOTP_URL,
+          hmodel: !!env.DCF_HMODEL_URL
+        },
+        ai_available: !!env.AI,
         timestamp: new Date().toISOString()
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -56,26 +107,25 @@ export default {
     try {
       const body = await request.json() as {
         ticker?: string;
-        symbol?: string;
+        models?: 'auto' | 'all' | '3stage' | 'sotp' | 'hmodel';
         assumptions?: Record<string, any>;
-        scenarios?: string[];
-        include_sensitivities?: boolean;
       };
       
-      const ticker = (body.ticker || body.symbol || '').toUpperCase();
+      const ticker = (body.ticker || '').toUpperCase();
+      const modelPreference = body.models || 'auto';
       
       if (!ticker) {
         return new Response(JSON.stringify({
           success: false,
-          error: 'Ticker or symbol is required'
+          error: 'Ticker is required'
         }), {
           status: 400,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
       }
 
-      // Check cache first (TTL: 1 hour for fundamentals)
-      const cacheKey = `dcf:${ticker}:${JSON.stringify(body.assumptions || {})}`;
+      // Check cache first
+      const cacheKey = `multi-dcf:${ticker}:${modelPreference}`;
       const cached = await env.FUNDAMENTALS_SNAP.get(cacheKey, 'json');
       
       if (cached && url.searchParams.get('fresh') !== 'true') {
@@ -89,60 +139,174 @@ export default {
         });
       }
 
-      // Call Python DCF service
-      let dcfData: DcfOutputType;
+      // === STEP 1: Fetch Fundamentals ===
+      console.log(`[Multi-DCF] Step 1: Fetching fundamentals for ${ticker}`);
+      let fundamentals: FundamentalsSnapshot;
       
-      if (env.DCF_SERVICE_URL) {
-        const dcfResponse = await fetch(`${env.DCF_SERVICE_URL}/dcf`, {
+      if (env.DATA_SERVICE_URL) {
+        const dataResponse = await fetch(`${env.DATA_SERVICE_URL}/fundamentals`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ticker,
-            assumptions: body.assumptions,
-            scenarios: body.scenarios || ['base', 'bull', 'bear'],
-            include_sensitivities: body.include_sensitivities !== false
-          })
+          body: JSON.stringify({ ticker })
         });
 
-        if (!dcfResponse.ok) {
-          throw new Error(`DCF service error: ${dcfResponse.statusText}`);
+        if (!dataResponse.ok) {
+          throw new Error(`Data service error: ${dataResponse.statusText}`);
         }
 
-        const dcfResult = await dcfResponse.json() as { success: boolean; data: any; error?: string };
-        
-        if (!dcfResult.success) {
-          throw new Error(dcfResult.error || 'DCF calculation failed');
+        const dataResult = await dataResponse.json() as { success: boolean; data: any };
+        if (!dataResult.success) {
+          throw new Error('Failed to fetch fundamentals');
         }
 
-        dcfData = dcfResult.data;
+        fundamentals = dataResult.data;
       } else {
-        // Fallback to mock data if no DCF service configured
-        dcfData = getMockDcfOutput(ticker);
+        throw new Error('DATA_SERVICE_URL not configured');
       }
 
-      // Validate output against schema
-      const validated = validateDcfOutput(dcfData);
+      // === STEP 2: Select Models (AI or Rule-based) ===
+      console.log(`[Multi-DCF] Step 2: Selecting models (preference: ${modelPreference})`);
+      let modelSelection: ModelSelectorOutput;
+
+      if (modelPreference === 'auto') {
+        // Use AI to select models
+        try {
+          modelSelection = await selectModelsWithAI(fundamentals, env);
+        } catch (error) {
+          console.warn('[Multi-DCF] AI selection failed, using rule-based fallback');
+          modelSelection = selectModelsRuleBased(fundamentals);
+        }
+      } else if (modelPreference === 'all') {
+        modelSelection = {
+          recommended_models: ['3stage', 'sotp', 'hmodel'],
+          reasoning: 'User requested all models',
+          confidence: 1.0,
+          weights: { '3stage': 0.33, 'sotp': 0.33, 'hmodel': 0.34 }
+        };
+      } else {
+        modelSelection = {
+          recommended_models: [modelPreference as '3stage' | 'sotp' | 'hmodel'],
+          reasoning: 'User specified model',
+          confidence: 1.0,
+          weights: { [modelPreference]: 1.0 }
+        };
+      }
+
+      console.log(`[Multi-DCF] Selected models: ${modelSelection.recommended_models.join(', ')}`);
+
+      // === STEP 3: Run Selected Models in Parallel ===
+      console.log(`[Multi-DCF] Step 3: Running ${modelSelection.recommended_models.length} model(s)`);
+      const modelPromises = modelSelection.recommended_models.map(async (model) => {
+        const serviceUrl = getServiceUrl(model, env);
+        
+        if (!serviceUrl) {
+          console.warn(`[Multi-DCF] Service URL not configured for ${model}`);
+          return null;
+        }
+
+        const endpoint = model === '3stage' ? '/dcf' : model === 'sotp' ? '/sotp' : '/hmodel';
+        
+        try {
+          const response = await fetch(`${serviceUrl}${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ticker, fundamentals })
+          });
+
+          if (!response.ok) {
+            console.error(`[Multi-DCF] ${model} error: ${response.statusText}`);
+            return null;
+          }
+
+          const result = await response.json() as { success: boolean; data: any };
+          
+          if (!result.success) {
+            console.error(`[Multi-DCF] ${model} calculation failed`);
+            return null;
+          }
+
+          return { model, result: result.data };
+        } catch (error) {
+          console.error(`[Multi-DCF] ${model} exception:`, error);
+          return null;
+        }
+      });
+
+      const modelResults = (await Promise.all(modelPromises)).filter(r => r !== null) as Array<{ model: string; result: any }>;
+
+      if (modelResults.length === 0) {
+        throw new Error('All DCF models failed');
+      }
+
+      // === STEP 4: Aggregate Results ===
+      console.log(`[Multi-DCF] Step 4: Aggregating ${modelResults.length} result(s)`);
+      
+      const weightedFairValue = modelResults.reduce((sum, { model, result }) => {
+        const weight = modelSelection.weights[model as keyof typeof modelSelection.weights] || 0;
+        return sum + (result.price_per_share * weight);
+      }, 0);
+
+      const simpleAverage = modelResults.reduce((sum, { result }) => sum + result.price_per_share, 0) / modelResults.length;
+
+      const prices = modelResults.map(({ result }) => result.price_per_share);
+      const rangeLow = Math.min(...prices);
+      const rangeHigh = Math.max(...prices);
+
+      const currentPrice = fundamentals.current_price;
+      const upsideToWeighted = ((weightedFairValue - currentPrice) / currentPrice) * 100;
+
+      // === STEP 5: Generate Recommendation ===
+      const recommendation = generateRecommendation(upsideToWeighted);
+
+      const finalResult = {
+        ticker,
+        current_price: currentPrice,
+        model_selection: {
+          recommended_models: modelSelection.recommended_models,
+          reasoning: modelSelection.reasoning,
+          confidence: modelSelection.confidence
+        },
+        individual_valuations: modelResults.map(({ model, result }) => ({
+          model,
+          price_per_share: result.price_per_share,
+          enterprise_value: result.enterprise_value,
+          upside_downside: result.upside_downside,
+          wacc: result.wacc,
+          assumptions: result.assumptions
+        })),
+        consensus_valuation: {
+          weighted_fair_value: weightedFairValue,
+          simple_average: simpleAverage,
+          range: {
+            low: rangeLow,
+            high: rangeHigh
+          },
+          upside_to_weighted: upsideToWeighted
+        },
+        recommendation,
+        confidence_level: modelSelection.confidence,
+        timestamp: new Date().toISOString()
+      };
 
       // Cache the result (1 hour TTL)
-      await env.FUNDAMENTALS_SNAP.put(cacheKey, JSON.stringify(validated), {
+      await env.FUNDAMENTALS_SNAP.put(cacheKey, JSON.stringify(finalResult), {
         expirationTtl: 3600
       });
 
       return new Response(JSON.stringify({
         success: true,
-        data: validated,
+        data: finalResult,
         cached: false,
-        data_source: env.DCF_SERVICE_URL ? 'yfinance' : 'mock',
         timestamp: new Date().toISOString()
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
 
     } catch (error) {
-      console.error('DCF service error:', error);
+      console.error('Multi-DCF service error:', error);
       return new Response(JSON.stringify({
         success: false,
-        error: error instanceof Error ? error.message : 'DCF analysis failed',
+        error: error instanceof Error ? error.message : 'DCF valuation failed',
         timestamp: new Date().toISOString()
       }), {
         status: 500,
@@ -153,227 +317,139 @@ export default {
 };
 
 /**
- * Mock DCF output for testing/fallback
+ * AI-powered model selector using Cloudflare Workers AI
  */
-function getMockDcfOutput(ticker: string): DcfOutputType {
-  const currentPrice = 180.0;
-  const fairValue = 210.0;
-  const upside = ((fairValue - currentPrice) / currentPrice) * 100;
+async function selectModelsWithAI(fundamentals: FundamentalsSnapshot, env: Env): Promise<ModelSelectorOutput> {
+  const segmentInfo = fundamentals.revenue_by_segment && fundamentals.revenue_by_segment.length > 0
+    ? fundamentals.revenue_by_segment.map(s => 
+        `- ${s.segment_name}: $${(s.revenue / 1e9).toFixed(1)}B (${(s.margin * 100).toFixed(1)}% margin)`
+      ).join('\n')
+    : 'Single/undisclosed segment';
+
+  const prompt = `You are a senior financial analyst at Goldman Sachs. Recommend which DCF valuation model(s) to use for the following company:
+
+COMPANY: ${fundamentals.ticker}
+SECTOR: ${fundamentals.sector || 'Unknown'}
+MARKET CAP: $${(fundamentals.market_cap / 1e9).toFixed(1)}B
+REVENUE: $${(fundamentals.revenue / 1e9).toFixed(1)}B
+
+BUSINESS SEGMENTS:
+${segmentInfo}
+
+GROWTH METRICS:
+- 3Y Revenue CAGR: ${(fundamentals.revenue_cagr_3y * 100).toFixed(1)}%
+- EBITDA Margin: ${(fundamentals.ebitda_margin * 100).toFixed(1)}%
+
+AVAILABLE MODELS:
+1. **3-Stage DCF**: Best for large-cap companies with predictable declining growth trajectory
+2. **SOTP (Sum-of-the-Parts)**: Best for diversified companies with distinct business segments
+3. **H-Model DCF**: Best for high-growth companies with simpler assumptions
+
+INSTRUCTIONS:
+- If company has 3+ distinct segments with different margins/growth, strongly favor SOTP
+- If company is large-cap (>$500B) and diversified, use SOTP + 3-Stage
+- If company is pure-play or 80%+ revenue from one segment, prefer 3-Stage or H-Model
+- If high growth (>15% CAGR), H-Model is appropriate
+- You can recommend multiple models with weights
+
+Return ONLY valid JSON (no markdown):
+{
+  "recommended_models": ["model1", "model2"],
+  "reasoning": "explanation",
+  "confidence": 0.85,
+  "weights": {"model1": 0.6, "model2": 0.4}
+}`;
+
+  const response = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
+    messages: [{ role: 'user', content: prompt }],
+    temperature: 0.1
+  }) as any;
+
+  // Parse AI response
+  let responseText = response.response || '';
+  
+  // Remove markdown code blocks if present
+  responseText = responseText.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+  
+  const parsed = JSON.parse(responseText);
 
   return {
-    symbol: ticker,
-    analysis_date: new Date().toISOString(),
-    assumptions: {
-      revenue_growth_years_1_5: 0.10,
-      revenue_growth_years_6_10: 0.05,
-      terminal_growth_rate: 0.03,
-      ebitda_margin_current: 0.28,
-      ebitda_margin_target: 0.30,
-      margin_expansion_years: 5,
-      tax_rate_current: 0.21,
-      tax_rate_target: 0.21,
-      capex_as_percent_revenue: 0.04,
-      depreciation_as_percent_capex: 0.80,
-      working_capital_as_percent_revenue: 0.02,
-      risk_free_rate: 0.045,
-      market_risk_premium: 0.08,
-      beta: 1.2,
-      cost_of_debt: 0.05,
-      debt_to_equity_ratio: 1.5,
-      terminal_multiple_method: 'perpetuity' as const,
-      created_at: new Date().toISOString()
-    },
-    base_case: {
-      enterprise_value: 3_300_000_000_000,
-      equity_value: 3_250_000_000_000,
-      price_per_share: fairValue,
-      current_price: currentPrice,
-      upside_downside: upside,
-      wacc: 0.095,
-      terminal_value: 2_200_000_000_000,
-      terminal_value_percent: 0.67,
-      projections: Array.from({ length: 5 }, (_, i) => ({
-        year: i + 1,
-        revenue: 383_000_000_000 * Math.pow(1.10, i + 1),
-        ebitda: 383_000_000_000 * Math.pow(1.10, i + 1) * 0.30,
-        ebit: 383_000_000_000 * Math.pow(1.10, i + 1) * 0.27,
-        ebt: 383_000_000_000 * Math.pow(1.10, i + 1) * 0.27,
-        net_income: 383_000_000_000 * Math.pow(1.10, i + 1) * 0.27 * 0.79,
-        capex: 383_000_000_000 * Math.pow(1.10, i + 1) * 0.04,
-        depreciation: 383_000_000_000 * Math.pow(1.10, i + 1) * 0.03,
-        working_capital_change: 383_000_000_000 * Math.pow(1.10, i + 1) * 0.02,
-        free_cash_flow: 383_000_000_000 * Math.pow(1.10, i + 1) * 0.20,
-        discounted_fcf: 383_000_000_000 * Math.pow(1.10, i + 1) * 0.20 / Math.pow(1.095, i + 1)
-      })),
-      terminal_year: {
-        revenue: 616_000_000_000,
-        ebitda: 185_000_000_000,
-        ebit: 166_000_000_000,
-        net_income: 131_000_000_000,
-        free_cash_flow: 123_000_000_000
-      },
-      sensitivity_revenue_growth: {
-        low: 180.0,
-        base: fairValue,
-        high: 245.0
-      },
-      sensitivity_margins: {
-        low: 185.0,
-        base: fairValue,
-        high: 238.0
-      },
-      sensitivity_wacc: {
-        low: 245.0,
-        base: fairValue,
-        high: 178.0
-      }
-    },
-    bull_case: {
-      scenario_name: 'bull_case' as const,
-      enterprise_value: 4_200_000_000_000,
-      equity_value: 4_150_000_000_000,
-      price_per_share: 268.0,
-      current_price: currentPrice,
-      upside_downside: ((268.0 - currentPrice) / currentPrice) * 100,
-      wacc: 0.085,
-      terminal_value: 2_800_000_000_000,
-      terminal_value_percent: 0.67,
-      projections: Array.from({ length: 5 }, (_, i) => ({
-        year: i + 1,
-        revenue: 383_000_000_000 * Math.pow(1.13, i + 1),
-        ebitda: 383_000_000_000 * Math.pow(1.13, i + 1) * 0.32,
-        ebit: 383_000_000_000 * Math.pow(1.13, i + 1) * 0.29,
-        ebt: 383_000_000_000 * Math.pow(1.13, i + 1) * 0.29,
-        net_income: 383_000_000_000 * Math.pow(1.13, i + 1) * 0.29 * 0.79,
-        capex: 383_000_000_000 * Math.pow(1.13, i + 1) * 0.04,
-        depreciation: 383_000_000_000 * Math.pow(1.13, i + 1) * 0.03,
-        working_capital_change: 383_000_000_000 * Math.pow(1.13, i + 1) * 0.02,
-        free_cash_flow: 383_000_000_000 * Math.pow(1.13, i + 1) * 0.22,
-        discounted_fcf: 383_000_000_000 * Math.pow(1.13, i + 1) * 0.22 / Math.pow(1.085, i + 1)
-      })),
-      terminal_year: {
-        revenue: 706_000_000_000,
-        ebitda: 226_000_000_000,
-        ebit: 205_000_000_000,
-        net_income: 162_000_000_000,
-        free_cash_flow: 155_000_000_000
-      },
-      sensitivity_revenue_growth: {
-        low: 230.0,
-        base: 268.0,
-        high: 312.0
-      },
-      sensitivity_margins: {
-        low: 235.0,
-        base: 268.0,
-        high: 305.0
-      },
-      sensitivity_wacc: {
-        low: 312.0,
-        base: 268.0,
-        high: 228.0
-      }
-    },
-    bear_case: {
-      scenario_name: 'bear_case' as const,
-      enterprise_value: 2_400_000_000_000,
-      equity_value: 2_350_000_000_000,
-      price_per_share: 152.0,
-      current_price: currentPrice,
-      upside_downside: ((152.0 - currentPrice) / currentPrice) * 100,
-      wacc: 0.105,
-      terminal_value: 1_600_000_000_000,
-      terminal_value_percent: 0.67,
-      projections: Array.from({ length: 5 }, (_, i) => ({
-        year: i + 1,
-        revenue: 383_000_000_000 * Math.pow(1.07, i + 1),
-        ebitda: 383_000_000_000 * Math.pow(1.07, i + 1) * 0.26,
-        ebit: 383_000_000_000 * Math.pow(1.07, i + 1) * 0.23,
-        ebt: 383_000_000_000 * Math.pow(1.07, i + 1) * 0.23,
-        net_income: 383_000_000_000 * Math.pow(1.07, i + 1) * 0.23 * 0.79,
-        capex: 383_000_000_000 * Math.pow(1.07, i + 1) * 0.04,
-        depreciation: 383_000_000_000 * Math.pow(1.07, i + 1) * 0.03,
-        working_capital_change: 383_000_000_000 * Math.pow(1.07, i + 1) * 0.02,
-        free_cash_flow: 383_000_000_000 * Math.pow(1.07, i + 1) * 0.16,
-        discounted_fcf: 383_000_000_000 * Math.pow(1.07, i + 1) * 0.16 / Math.pow(1.105, i + 1)
-      })),
-      terminal_year: {
-        revenue: 537_000_000_000,
-        ebitda: 140_000_000_000,
-        ebit: 123_000_000_000,
-        net_income: 97_000_000_000,
-        free_cash_flow: 86_000_000_000
-      },
-      sensitivity_revenue_growth: {
-        low: 130.0,
-        base: 152.0,
-        high: 178.0
-      },
-      sensitivity_margins: {
-        low: 135.0,
-        base: 152.0,
-        high: 172.0
-      },
-      sensitivity_wacc: {
-        low: 178.0,
-        base: 152.0,
-        high: 128.0
-      }
-    },
-    sensitivities: {
-      revenue_growth_sensitivity: [
-        { growth_rate: 0.05, price_per_share: 180.0, upside_downside: 0 },
-        { growth_rate: 0.10, price_per_share: 210.0, upside_downside: 16.7 },
-        { growth_rate: 0.15, price_per_share: 245.0, upside_downside: 36.1 }
-      ],
-      margin_sensitivity: [
-        { ebitda_margin: 0.26, price_per_share: 185.0, upside_downside: 2.8 },
-        { ebitda_margin: 0.30, price_per_share: 210.0, upside_downside: 16.7 },
-        { ebitda_margin: 0.34, price_per_share: 238.0, upside_downside: 32.2 }
-      ],
-      wacc_sensitivity: [
-        { wacc: 0.085, price_per_share: 245.0, upside_downside: 36.1 },
-        { wacc: 0.095, price_per_share: 210.0, upside_downside: 16.7 },
-        { wacc: 0.105, price_per_share: 178.0, upside_downside: -1.1 }
-      ],
-      terminal_growth_sensitivity: [
-        { terminal_growth: 0.02, price_per_share: 195.0, upside_downside: 8.3 },
-        { terminal_growth: 0.03, price_per_share: 210.0, upside_downside: 16.7 },
-        { terminal_growth: 0.04, price_per_share: 228.0, upside_downside: 26.7 }
-      ],
-      two_way_sensitivity: [
-        { revenue_growth: 0.07, ebitda_margin: 0.26, price_per_share: 158.0, upside_downside: -12.2 },
-        { revenue_growth: 0.07, ebitda_margin: 0.30, price_per_share: 172.0, upside_downside: -4.4 },
-        { revenue_growth: 0.07, ebitda_margin: 0.34, price_per_share: 188.0, upside_downside: 4.4 },
-        { revenue_growth: 0.10, ebitda_margin: 0.26, price_per_share: 185.0, upside_downside: 2.8 },
-        { revenue_growth: 0.10, ebitda_margin: 0.30, price_per_share: 210.0, upside_downside: 16.7 },
-        { revenue_growth: 0.10, ebitda_margin: 0.34, price_per_share: 238.0, upside_downside: 32.2 },
-        { revenue_growth: 0.13, ebitda_margin: 0.26, price_per_share: 218.0, upside_downside: 21.1 },
-        { revenue_growth: 0.13, ebitda_margin: 0.30, price_per_share: 252.0, upside_downside: 40.0 },
-        { revenue_growth: 0.13, ebitda_margin: 0.34, price_per_share: 292.0, upside_downside: 62.2 }
-      ]
-    },
-    summary: {
-      fair_value_range: {
-        low: 152.0,
-        high: 268.0,
-        base: 210.0
-      },
-      probability_weighted_value: 210.0,
-      confidence_level: 0.75,
-      key_drivers: [
-        'Revenue growth: 10%',
-        'EBITDA margin expansion to 30%',
-        'WACC: 9.5%'
-      ],
-      key_risks: [
-        'Growth slowdown below assumptions',
-        'Margin compression from competition',
-        'Higher cost of capital'
-      ]
-    },
-    data_sources: ['mock'],
-    last_updated: new Date().toISOString(),
-    notes: 'Mock DCF output - connect DCF_SERVICE_URL for real data'
+    recommended_models: parsed.recommended_models || ['3stage'],
+    reasoning: parsed.reasoning || 'AI model selection',
+    confidence: parsed.confidence || 0.75,
+    weights: parsed.weights || { '3stage': 1.0 }
   };
+}
+
+/**
+ * Rule-based fallback model selector
+ */
+function selectModelsRuleBased(fundamentals: FundamentalsSnapshot): ModelSelectorOutput {
+  const models: ('3stage' | 'sotp' | 'hmodel')[] = [];
+  const weights: Record<string, number> = {};
+  let reasoning = '';
+
+  // Rule 1: Check if diversified (multiple segments)
+  const hasMultipleSegments = fundamentals.revenue_by_segment && fundamentals.revenue_by_segment.length >= 3;
+  const segmentConcentration = hasMultipleSegments
+    ? Math.max(...fundamentals.revenue_by_segment!.map(s => s.revenue)) / fundamentals.revenue
+    : 1.0;
+
+  if (hasMultipleSegments && segmentConcentration < 0.60) {
+    // Diversified: No single segment > 60%
+    models.push('sotp');
+    weights['sotp'] = 0.5;
+    reasoning += 'Company is diversified across multiple segments. ';
+  }
+
+  // Rule 2: Check growth stage
+  const isHighGrowth = fundamentals.revenue_cagr_3y > 0.15;
+  const isMaturing = fundamentals.market_cap > 500_000_000_000; // >$500B
+
+  if (isHighGrowth && !isMaturing) {
+    models.push('hmodel');
+    weights['hmodel'] = 0.4;
+    reasoning += 'High growth rate favors H-Model. ';
+  }
+
+  // Rule 3: Default to 3-stage for most established companies
+  if (isMaturing || !isHighGrowth) {
+    models.push('3stage');
+    weights['3stage'] = 0.5;
+    reasoning += '3-Stage DCF appropriate for mature company. ';
+  }
+
+  // Normalize weights
+  const totalWeight = Object.values(weights).reduce((a, b) => a + b, 0);
+  Object.keys(weights).forEach(key => {
+    weights[key] = weights[key] / totalWeight;
+  });
+
+  return {
+    recommended_models: models.length > 0 ? models : ['3stage'], // Default
+    reasoning,
+    confidence: 0.75,
+    weights: weights as any
+  };
+}
+
+/**
+ * Get service URL for a specific model
+ */
+function getServiceUrl(model: string, env: Env): string | undefined {
+  if (model === '3stage') return env.DCF_3STAGE_URL;
+  if (model === 'sotp') return env.DCF_SOTP_URL;
+  if (model === 'hmodel') return env.DCF_HMODEL_URL;
+  return undefined;
+}
+
+/**
+ * Generate buy/sell recommendation from upside %
+ */
+function generateRecommendation(upside: number): string {
+  if (upside > 20) return 'STRONG BUY';
+  if (upside > 10) return 'BUY';
+  if (upside > -5) return 'HOLD';
+  if (upside > -15) return 'SELL';
+  return 'STRONG SELL';
 }
