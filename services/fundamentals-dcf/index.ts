@@ -9,7 +9,7 @@
  * 5. Generate final recommendation
  */
 
-import { validateDcfOutput, type DcfOutputType } from '../shared/schemas/dcf';
+// import { validateDcfOutput, type DcfOutputType } from '../shared/schemas/dcf';
 
 // Cloudflare Workers types
 interface KVNamespace {
@@ -25,6 +25,7 @@ export interface Env {
   FUNDAMENTALS_SNAP: KVNamespace;
   UNIFIED_DCF_URL?: string;    // Unified DCF service (data + 3-stage + h-model)
   AI: Ai; // Reintroduced for gap explanation
+  AI_MODEL?: string;
   // Note: SOTP is disabled (requires EDGAR segment data)
 }
 
@@ -109,7 +110,7 @@ export default {
           });
         }
         
-        const res = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
+        const res = await (env.AI as any).run((env.AI_MODEL || '@cf/meta/llama-3.1-8b-instruct-fp8') as any, {
           prompt: 'Say hello in one word.'
         });
         
@@ -130,7 +131,7 @@ export default {
       }
     }
 
-    // Only accept POST requests for DCF analysis
+    // Only accept POST requests for DCF analysis (except health/test-ai)
     if (request.method !== 'POST') {
       return new Response(JSON.stringify({
         success: false,
@@ -145,6 +146,9 @@ export default {
       const body = await request.json() as {
         ticker?: string;
         assumptions?: Record<string, any>;
+        probabilities?: Record<string, number>;
+        external?: Record<string, any>;
+        include_ai?: boolean;
       };
       
       const ticker = (body.ticker || '').toUpperCase();
@@ -159,8 +163,9 @@ export default {
         });
       }
 
-      // Check cache first
-      const cacheKey = `unified-dcf:${ticker}`;
+      // Check cache first (keyed by assumptions signature)
+      const assumpSig = body.assumptions ? btoa(JSON.stringify(body.assumptions)).slice(0, 32) : 'none';
+      const cacheKey = `unified-dcf:${ticker}:a=${assumpSig}`;
       const cached = await env.FUNDAMENTALS_SNAP.get(cacheKey, 'json');
       
       if (cached && url.searchParams.get('fresh') !== 'true') {
@@ -173,6 +178,7 @@ export default {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
       }
+
 
       // === STEP 1: Fetch Fundamentals ===
       let fundamentals: FundamentalsSnapshot;
@@ -206,7 +212,7 @@ export default {
       const unifiedResponse = await fetch(`${env.UNIFIED_DCF_URL}/unified`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticker, fundamentals })
+        body: JSON.stringify({ ticker, fundamentals, assumptions: body.assumptions || {} })
       });
 
       if (!unifiedResponse.ok) {
@@ -278,25 +284,101 @@ export default {
         };
       }
 
-      // AI: Explain gap between DCF and analyst consensus (CPU optimized)
-      try {
-        if (env.AI) {
-          finalResult.ai_raw_response = await explainGapWithAI(env.AI, {
+      // === SIMPLIFIED AI ANALYSIS (Single Prompt) ===
+      let ai_analysis: {
+        thesis?: string;
+        bull_scenario?: string;
+        bear_scenario?: string;
+        gap_explanation?: string;
+      } = {};
+
+      if (body.include_ai && env.AI) {
+        try {
+          const model = env.AI_MODEL || '@cf/meta/llama-3.1-8b-instruct-fp8';
+          
+          // Single comprehensive prompt for all analysis
+          const analysisPrompt = `You are a Senior Equity Research Analyst. Analyze ${ticker} and provide a comprehensive investment analysis.
+
+FUNDAMENTAL DATA:
+- Current Price: $${fundamentals.current_price}
+- Revenue: $${fundamentals.revenue?.toLocaleString() || 'N/A'}
+- EBITDA Margin: ${(fundamentals.ebitda_margin * 100)?.toFixed(1) || 'N/A'}%
+- Free Cash Flow: $${fundamentals.free_cash_flow?.toLocaleString() || 'N/A'}
+- Beta: ${fundamentals.beta || 'N/A'}
+- Revenue Growth (3Y): ${(fundamentals.revenue_cagr_3y * 100)?.toFixed(1) || 'N/A'}%
+- Economic Moat: ${fundamentals.economic_moat || 'N/A'} (Score: ${fundamentals.moat_strength_score || 'N/A'}/100)
+- Analyst Target: $${analystAvgTarget || 'N/A'} (${analystCount} analysts)
+
+DCF VALUATION:
+- Weighted Fair Value: $${weightedFairValue?.toFixed(2) || 'N/A'}
+- 3-Stage DCF: $${modelResults.find((r: any) => r.model === '3stage')?.result?.price_per_share?.toFixed(2) || 'N/A'}
+- H-Model DCF: $${modelResults.find((r: any) => r.model === 'hmodel')?.result?.price_per_share?.toFixed(2) || 'N/A'}
+
+TASK: Provide a comprehensive investment analysis with the following structure:
+
+**THESIS** (2-3 sentences):
+Write the investment thesis focusing on the company's strategic position, business model, and growth story. Consider transformation narratives, competitive advantages, and market positioning beyond just financial metrics.
+
+**BULL CASE** (3-5 key drivers):
+- Growth drivers and competitive advantages
+- Strategic partnerships, contracts, or market opportunities  
+- Business model strengths and transformation milestones
+- Market tailwinds and positive catalysts
+
+**BEAR CASE** (3-5 key risks):
+- Business model risks and execution challenges
+- Market headwinds and competitive threats
+- Customer concentration, funding, or operational risks
+- Regulatory, macro, or industry-specific risks
+
+Focus on business narrative and strategic context, not just financial ratios. Be specific about the company's actual business model and strategic positioning.`;
+
+          // Execute single AI call for all analysis
+          const analysisRes = await (env.AI as any).run(model as any, { 
+            prompt: analysisPrompt, 
+            max_tokens: 1000 
+          });
+          
+          const analysisText = (analysisRes as any)?.response || '';
+          
+          // Parse the response into structured format
+          const thesisMatch = analysisText.match(/\*\*THESIS\*\*[:\s]*(.*?)(?=\*\*BULL CASE\*\*|$)/s);
+          const bullMatch = analysisText.match(/\*\*BULL CASE\*\*[:\s]*(.*?)(?=\*\*BEAR CASE\*\*|$)/s);
+          const bearMatch = analysisText.match(/\*\*BEAR CASE\*\*[:\s]*(.*?)$/s);
+          
+          ai_analysis.thesis = thesisMatch ? thesisMatch[1].trim() : undefined;
+          ai_analysis.bull_scenario = bullMatch ? bullMatch[1].trim() : undefined;
+          ai_analysis.bear_scenario = bearMatch ? bearMatch[1].trim() : undefined;
+          
+          // Keep gap explanation separate for now (can be simplified later)
+          const gapExplanationInput = {
             ticker,
             company_name: fundamentals.company_name,
             sector: fundamentals.sector,
             current_price: fundamentals.current_price,
-            analyst_avg_target: analystAvgTarget || fundamentals.current_price * 1.1, // Fallback if no analyst data
+            analyst_avg_target: analystAvgTarget || fundamentals.current_price * 1.1,
             dcf_weighted_fair_value: weightedFairValue,
             three_stage: modelResults.find((r: any) => r.model === '3stage')?.result,
             hmodel: modelResults.find((r: any) => r.model === 'hmodel')?.result,
             fundamentals
-          });
+          };
+          
+          try {
+            const gapResult = await explainGapWithAI(env.AI, model, gapExplanationInput);
+            ai_analysis.gap_explanation = gapResult;
+          } catch (e) {
+            console.warn('[Gap Analysis] Failed:', e);
+            ai_analysis.gap_explanation = undefined;
+          }
+
+        } catch (e) {
+          console.warn('[Unified-DCF] AI analysis failed:', e);
+          ai_analysis = {};
         }
-      } catch (e) {
-        console.warn('[Unified-DCF] AI gap explanation failed:', e);
-        finalResult.ai_error = e instanceof Error ? e.message : 'AI processing failed';
       }
+
+      // Add AI analysis to final result
+      finalResult.ai_analysis = ai_analysis;
 
       // Cache the result (1 hour TTL)
       await env.FUNDAMENTALS_SNAP.put(cacheKey, JSON.stringify(finalResult), {
@@ -329,16 +411,10 @@ export default {
 /**
  * Generate buy/sell recommendation from upside %
  */
-function generateRecommendation(upside: number): string {
-  if (upside > 20) return 'STRONG BUY';
-  if (upside > 10) return 'BUY';
-  if (upside > -5) return 'HOLD';
-  if (upside > -15) return 'SELL';
-  return 'STRONG SELL';
-}
+// (Removed unused generateRecommendation)
 
 // High-quality, company-tailored gap explanation prompt
-async function explainGapWithAI(ai: Ai, input: {
+async function explainGapWithAI(ai: Ai, model: string, input: {
   ticker: string;
   company_name?: string;
   sector?: string;
@@ -369,38 +445,25 @@ async function explainGapWithAI(ai: Ai, input: {
     hmodel?.assumptions?.g_low || 0
   );
 
-  // Enhanced prompt with role definition and company-specific analysis
-  const prompt = `You are a Senior Equity Research Analyst at a top-tier investment bank with 15+ years of experience in ${sector || 'equity'} analysis. You specialize in DCF modeling and valuation discrepancies.
+  const prompt = `Analyze the valuation gap for ${ticker} (${company_name || 'Unknown Company'}) in the ${sector || 'equity'} sector.
 
-COMPANY: ${ticker} (${company_name || 'Unknown Company'})
-SECTOR: ${sector || 'Unknown'} | INDUSTRY: ${fundamentals.industry || 'Unknown'}
-
-CURRENT VALUATION SITUATION:
+CURRENT VALUATION:
 • Market Price: $${current_price.toFixed(2)}
-• Analyst Consensus Target: $${analyst_avg_target.toFixed(2)} (${analystCount} analysts)
-• DCF Weighted Fair Value: $${dcf_weighted_fair_value.toFixed(2)}
+• Analyst Target: $${analyst_avg_target.toFixed(2)} (${analystCount} analysts)
+• DCF Fair Value: $${dcf_weighted_fair_value.toFixed(2)}
 
-DCF MODEL BREAKDOWN:
+DCF MODELS:
 • 3-Stage DCF: $${threeStagePrice.toFixed(2)} (WACC: ${(threeStageWacc * 100).toFixed(1)}%)
 • H-Model DCF: $${hmodelPrice.toFixed(2)} (WACC: ${(hmodelWacc * 100).toFixed(1)}%)
-• Terminal Growth Rate: ${(terminalGrowth * 100).toFixed(1)}%
 
-FUNDAMENTAL METRICS:
-• Historical Revenue Growth (3Y): ${histGrowth}%
-• Analyst Expected Growth: ${analystGrowth}%
+KEY METRICS:
+• Revenue Growth: ${histGrowth}% (3Y) vs ${analystGrowth}% (expected)
 • EBITDA Margin: ${ebitdaMargin}%
-• Free Cash Flow Margin: ${fcfMargin}%
-• Economic Moat: ${moat} (Strength: ${moatScore}/100)
+• Economic Moat: ${moat} (${moatScore}/100)
 
-TASK: As a senior analyst, provide a direct 3-4 sentence analysis of the valuation gap. Start immediately with the analysis - no introductory statements. Focus on:
-1. Company-specific factors driving the discrepancy
-2. Which valuation method appears most reasonable for this ${sector || 'sector'} company
-3. Key assumptions that could explain the gap
-4. Market sentiment vs fundamental reality
+Provide a 3-4 sentence analysis explaining the valuation discrepancy. Focus on business model factors, growth assumptions, and market positioning that could explain the gap between market price, analyst targets, and DCF models.`;
 
-Be specific about ${ticker}'s business model, competitive position, and growth prospects. Avoid generic statements, introductory phrases, or words like "interesting" or "intriguing".`;
-
-  const res = await ai.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
+  const res = await (ai as any).run(model as any, {
     prompt: prompt,
     max_tokens: 200  // Increased for more detailed analysis
   });
@@ -408,3 +471,4 @@ Be specific about ${ticker}'s business model, competitive position, and growth p
   // Return raw response - no parsing, no JSON processing
   return (res as any)?.response || 'AI analysis unavailable';
 }
+

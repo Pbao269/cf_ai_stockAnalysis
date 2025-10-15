@@ -14,7 +14,7 @@ Microservices deployed as Cloudflare Workers:
 - **catalyst-sentiment**: News sentiment analysis
 - **entry-dca**: Entry strategies and DCA recommendations
 - **user-data**: User preferences and watchlists
-- **notion-export**: Report export to Notion
+- **notion-export**: Report export to Notion (optional)
 - **etl-workflows**: Data processing and scheduled tasks
 
 ## Setup

@@ -11,7 +11,8 @@
     }
   ],
   "vars": {
-    "UNIFIED_DCF_URL": "https://fundamental-dcf.onrender.com"
+    "UNIFIED_DCF_URL": "https://fundamental-dcf.onrender.com",
+    "AI_MODEL": "@cf/meta/llama-3.1-8b-instruct-fp8"
   },
   "ai": {
     "binding": "AI"

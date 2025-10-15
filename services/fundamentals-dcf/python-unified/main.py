@@ -464,12 +464,25 @@ def fetch_fundamentals_snapshot(ticker: str) -> Dict[str, Any]:
         market_cap = info.get('marketCap', current_price * shares_outstanding if shares_outstanding > 0 else 0)
         
         # === INCOME STATEMENT (TTM) ===
-        revenue = _safe_get(income_stmt, 'Total Revenue', 0)
-        gross_profit = _safe_get(income_stmt, 'Gross Profit', 0)
-        operating_income = _safe_get(income_stmt, 'Operating Income', 0)
-        ebit = _safe_get(income_stmt, 'EBIT', operating_income)
-        ebitda = _safe_get(income_stmt, 'EBITDA', 0)
-        net_income = _safe_get(income_stmt, 'Net Income', 0)
+        # Calculate TTM from quarterly data for most accurate recent figures
+        revenue = calculate_ttm(income_stmt_q, 'Total Revenue')
+        gross_profit = calculate_ttm(income_stmt_q, 'Gross Profit')
+        operating_income = calculate_ttm(income_stmt_q, 'Operating Income')
+        ebit = calculate_ttm(income_stmt_q, 'EBIT', operating_income)
+        ebitda = calculate_ttm(income_stmt_q, 'EBITDA', 0)
+        net_income = calculate_ttm(income_stmt_q, 'Net Income', 0)
+        
+        # Fallback to annual data if quarterly TTM fails
+        if revenue <= 0:
+            revenue = _safe_get(income_stmt, 'Total Revenue', 0)
+            gross_profit = _safe_get(income_stmt, 'Gross Profit', 0)
+            operating_income = _safe_get(income_stmt, 'Operating Income', 0)
+            ebit = _safe_get(income_stmt, 'EBIT', operating_income)
+            ebitda = _safe_get(income_stmt, 'EBITDA', 0)
+            net_income = _safe_get(income_stmt, 'Net Income', 0)
+            logger.warning(f"[{ticker}] Using annual data as TTM fallback")
+        else:
+            logger.info(f"[{ticker}] Using TTM data: Revenue=${revenue/1e6:.1f}M")
         
         # === IMPROVED EBITDA CALCULATION ===
         # If EBITDA is missing but we have EBIT and D&A, calculate it
@@ -497,11 +510,22 @@ def fetch_fundamentals_snapshot(ticker: str) -> Dict[str, Any]:
             operating_income = net_income * 1.3
             logger.info(f"[{ticker}] Estimated Operating Income from Net Income: {operating_income:,.0f}")
         
-        # === CASH FLOW STATEMENT ===
-        operating_cash_flow = _safe_get(cashflow, 'Operating Cash Flow', 0)
-        capex = abs(_safe_get(cashflow, 'Capital Expenditure', 0))
+        # === CASH FLOW STATEMENT (TTM) ===
+        # Calculate TTM from quarterly data for most accurate recent figures
+        operating_cash_flow = calculate_ttm(cashflow_q, 'Operating Cash Flow')
+        capex = abs(calculate_ttm(cashflow_q, 'Capital Expenditure', 0))
         free_cash_flow = operating_cash_flow - capex
-        depreciation_amortization = abs(_safe_get(cashflow, 'Depreciation And Amortization', 0))
+        depreciation_amortization = abs(calculate_ttm(cashflow_q, 'Depreciation And Amortization', 0))
+        
+        # Fallback to annual data if quarterly TTM fails
+        if operating_cash_flow <= 0:
+            operating_cash_flow = _safe_get(cashflow, 'Operating Cash Flow', 0)
+            capex = abs(_safe_get(cashflow, 'Capital Expenditure', 0))
+            free_cash_flow = operating_cash_flow - capex
+            depreciation_amortization = abs(_safe_get(cashflow, 'Depreciation And Amortization', 0))
+            logger.warning(f"[{ticker}] Using annual cash flow data as TTM fallback")
+        else:
+            logger.info(f"[{ticker}] Using TTM cash flow: OCF=${operating_cash_flow/1e6:.1f}M, FCF=${free_cash_flow/1e6:.1f}M")
         
         # === BALANCE SHEET ===
         cash = _safe_get(balance_sheet, 'Cash And Cash Equivalents', 0)
@@ -715,8 +739,20 @@ def fetch_fundamentals_snapshot(ticker: str) -> Dict[str, Any]:
             'last_updated': datetime.now().isoformat()
         }
         
-        logger.info(f"✅ Comprehensive snapshot for {ticker}: Revenue=${revenue/1e9:.2f}B, "
-                   f"FCF=${free_cash_flow/1e9:.2f}B")
+        # === DATA VALIDATION ===
+        data_quality_issues = []
+        if revenue <= 0:
+            data_quality_issues.append("Revenue is zero or negative")
+        if abs(revenue_cagr_3y) > 1.0:  # More than 100% growth/decline
+            data_quality_issues.append(f"Extreme revenue growth: {revenue_cagr_3y:.1%}")
+        if ebitda_margin < -0.5:  # More than 50% negative margin
+            data_quality_issues.append(f"Extreme negative EBITDA margin: {ebitda_margin:.1%}")
+        
+        if data_quality_issues:
+            logger.warning(f"[{ticker}] Data quality issues: {'; '.join(data_quality_issues)}")
+        
+        logger.info(f"✅ Comprehensive snapshot for {ticker}: Revenue=${revenue/1e6:.1f}M, "
+                   f"FCF=${free_cash_flow/1e6:.1f}M, Growth={revenue_cagr_3y:.1%}")
         
         return snapshot
         
@@ -729,23 +765,39 @@ def calculate_cagr(df: pd.DataFrame, metric: str, years: int) -> float:
     """Calculate CAGR for a metric over N years"""
     try:
         if metric not in df.index:
-            return 0.08
+            logger.warning(f"Metric {metric} not found in DataFrame")
+            return 0.03  # Return 3% (GDP growth) for missing data - professional standard
         
         values = df.loc[metric].values
         if len(values) < years + 1:
-            return 0.08
+            logger.warning(f"Insufficient data for {years}-year CAGR: {len(values)} periods available")
+            return 0.03  # Return 3% (GDP growth) for insufficient data - professional standard
         
+        # yfinance data is typically sorted with most recent first (index 0)
+        # But let's be safe and check the data
         ending_value = values[0]
         beginning_value = values[min(years, len(values) - 1)]
         
+        # Validate data quality
         if beginning_value <= 0 or pd.isna(ending_value) or pd.isna(beginning_value):
-            return 0.08
+            logger.warning(f"Invalid data for CAGR: ending={ending_value}, beginning={beginning_value}")
+            return 0.03  # Return 3% (GDP growth) for invalid data - professional standard
+        
+        # Additional validation: check if values are reasonable
+        if ending_value < beginning_value * 0.1:  # More than 90% decline
+            logger.warning(f"Extreme decline detected: {ending_value} vs {beginning_value}")
         
         cagr = (ending_value / beginning_value) ** (1 / years) - 1
-        return max(-0.5, min(0.5, cagr))
         
-    except Exception:
-        return 0.08
+        # Log the calculation for debugging
+        logger.info(f"CAGR calculation: {ending_value:,.0f} / {beginning_value:,.0f} ^ (1/{years}) - 1 = {cagr:.1%}")
+        
+        # Only cap extreme negative values, allow high growth
+        return max(-0.9, cagr)
+        
+    except Exception as e:
+        logger.error(f"CAGR calculation failed: {e}")
+        return 0.03  # Return 3% (GDP growth) for calculation errors - professional standard
 
 
 def calculate_fcf_cagr(cashflow_df: pd.DataFrame, years: int) -> float:
@@ -755,19 +807,20 @@ def calculate_fcf_cagr(cashflow_df: pd.DataFrame, years: int) -> float:
         capex = cashflow_df.loc['Capital Expenditure'].values if 'Capital Expenditure' in cashflow_df.index else [0] * 10
         
         if len(ocf) < years + 1 or len(capex) < years + 1:
-            return 0.08
+            return 0.03  # Return 3% (GDP growth) for insufficient data - professional standard
         
         ending_fcf = ocf[0] - abs(capex[0])
         beginning_fcf = ocf[min(years, len(ocf) - 1)] - abs(capex[min(years, len(capex) - 1)])
         
         if beginning_fcf <= 0:
-            return 0.08
+            return 0.03  # Return 3% (GDP growth) for negative beginning FCF - professional standard
         
         cagr = (ending_fcf / beginning_fcf) ** (1 / years) - 1
-        return max(-0.5, min(0.5, cagr))
+        # Only cap extreme negative values, allow high growth
+        return max(-0.9, cagr)
         
     except Exception:
-        return 0.08
+        return 0.03  # Return 3% (GDP growth) for calculation errors - professional standard
 
 
 def estimate_working_capital_days(income_stmt: pd.DataFrame, balance_sheet: pd.DataFrame) -> Dict[str, float]:
@@ -851,12 +904,12 @@ def calculate_terminal_value_exit_multiple(terminal_ebitda: float, exit_multiple
 
 
 def validate_terminal_growth(terminal_growth: float, wacc: float) -> float:
-    """Ensure terminal growth is realistic and less than WACC; clamp to GDP-like range."""
+    """Ensure terminal growth is realistic and less than WACC; allow higher terminal growth for high-growth companies."""
     if wacc <= 0:
-        return min(0.05, max(0.0, terminal_growth))
+        return min(0.08, max(0.0, terminal_growth))  # Increased from 5% to 8%
     if terminal_growth >= wacc:
-        return wacc * 0.5
-    return max(0.0, min(0.05, terminal_growth))
+        return wacc * 0.7  # Increased from 50% to 70% of WACC
+    return max(0.0, min(0.08, terminal_growth))  # Increased from 5% to 8%
 
 
 def get_sector_profile(sector: str) -> Dict[str, Any]:
@@ -997,6 +1050,28 @@ def get_exit_multiple_validation(sector: str, chosen_multiple: float) -> Dict[st
         'note': 'Replace with external dataset (e.g., Damodaran) for stricter validation.'
     }
     return {'within_range': within, 'range_low': low, 'range_high': high, 'message': message, 'provenance': provenance}
+
+def calculate_ttm(df: pd.DataFrame, metric: str, fallback: float = 0.0) -> float:
+    """Calculate Trailing Twelve Months (TTM) from quarterly data"""
+    try:
+        if df is None or df.empty or metric not in df.index:
+            return fallback
+        
+        # Get the last 4 quarters of data
+        values = df.loc[metric].values
+        if len(values) < 4:
+            # If less than 4 quarters, sum what we have
+            ttm_value = sum(v for v in values if not pd.isna(v) and v != 0)
+        else:
+            # Sum last 4 quarters
+            ttm_value = sum(v for v in values[:4] if not pd.isna(v) and v != 0)
+        
+        return float(ttm_value) if ttm_value > 0 else fallback
+        
+    except Exception as e:
+        logger.warning(f"TTM calculation failed for {metric}: {e}")
+        return fallback
+
 
 def _safe_get(df: pd.DataFrame, key: str, column: int = 0) -> float:
     """Safely get value from DataFrame"""
@@ -1203,8 +1278,21 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
     current_debt = total_debt
     
     for year in range(1, 6):
-        # Revenue projection
-        projected_revenue = current_revenue * ((1 + stage1_growth) ** year)
+        # PROFESSIONAL STANDARD: Logarithmic growth decay (high growth cannot compound indefinitely)
+        # Instead of constant growth, apply decay factor each year
+        if stage1_growth > 0.25:  # Only apply decay for high-growth companies
+            # Decay factor: Year 1 = 100%, Year 2 = 90%, Year 3 = 81%, etc.
+            decay_factor = 0.92 ** (year - 1)  # 8% decay per year
+            effective_growth = stage1_growth * decay_factor
+            logger.info(f"[Growth Decay] Year {year}: {stage1_growth:.1%} → {effective_growth:.1%} (decay: {decay_factor:.1%})")
+        else:
+            effective_growth = stage1_growth
+        
+        # Revenue projection with decayed growth
+        if year == 1:
+            projected_revenue = current_revenue * (1 + effective_growth)
+        else:
+            projected_revenue = projections[year - 2]['revenue'] * (1 + effective_growth)
         
         # EBITDA (linear margin expansion to target)
         margin_progress = year / 5.0
@@ -1371,6 +1459,12 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
         terminal_nwc_change = (year_11_revenue - year_10_revenue) * nwc_pct
     terminal_fcf = terminal_nopat + terminal_depreciation - terminal_capex - terminal_nwc_change
     
+    # HANDLE NEGATIVE TERMINAL FCF: Use conservative floor
+    if terminal_fcf <= 0:
+        logger.warning(f"[3-Stage DCF] Negative terminal FCF ${terminal_fcf/1e6:.1f}M - using revenue-based floor")
+        terminal_fcf = year_11_revenue * 0.05  # 5% of revenue as conservative floor
+        logger.info(f"[3-Stage DCF] Using terminal FCF floor: ${terminal_fcf/1e6:.1f}M")
+    
     # Terminal Value methods
     tv_gordon = terminal_fcf / (wacc - terminal_growth)
     tv_exit_multiple = None
@@ -1402,7 +1496,16 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
     # Terminal value as % of EV
     terminal_value_percent = pv_terminal_value / enterprise_value if enterprise_value > 0 else 0
     terminal_dominance_warning = None
-    if terminal_value_percent > 0.75:
+    
+    # PROFESSIONAL STANDARD: Terminal value haircut if too dominant
+    if terminal_value_percent > 0.80:
+        logger.warning(f"[Terminal Value Check] Terminal value {terminal_value_percent:.1%} of EV is too high (>80%)")
+        logger.warning(f"[Terminal Value Check] Applying 20% haircut to terminal value for conservatism")
+        pv_terminal_value *= 0.80
+        enterprise_value = sum_pv_fcf + pv_terminal_value
+        terminal_value_percent = pv_terminal_value / enterprise_value if enterprise_value > 0 else 0
+        terminal_dominance_warning = "Terminal value >80% of EV; 20% haircut applied for conservatism."
+    elif terminal_value_percent > 0.75:
         terminal_dominance_warning = "Terminal value exceeds 75% of EV; review growth/WACC/forecast horizon."
     
     # === EQUITY VALUE ===
@@ -1416,6 +1519,16 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
         raise ValueError(f"Invalid shares outstanding: {final_shares}")
 
     price_per_share = equity_value / final_shares
+    
+    # PROFESSIONAL STANDARD: Market cap reality check
+    implied_market_cap = price_per_share * final_shares
+    max_reasonable_market_cap = 5_000_000_000_000  # $5T is absolute maximum
+    
+    if implied_market_cap > max_reasonable_market_cap:
+        logger.warning(f"[Market Cap Check] Implied market cap ${implied_market_cap/1e12:.2f}T exceeds reasonable maximum ${max_reasonable_market_cap/1e12:.1f}T")
+        scale_factor = max_reasonable_market_cap / implied_market_cap
+        price_per_share *= scale_factor
+        logger.warning(f"[Market Cap Check] Scaling down fair value by {(1-scale_factor)*100:.1f}% to ${price_per_share:.2f}")
     
     # Upside/Downside
     upside_downside = ((price_per_share - current_price) / current_price) * 100 if current_price > 0 else 0
@@ -1466,27 +1579,85 @@ def generate_3stage_assumptions(fundamentals: Dict[str, Any], custom: Dict[str, 
     custom = custom or {}
     
     # === GROWTH EXPECTATIONS ===
-    historical_growth = fundamentals.get('revenue_cagr_3y', 0.08)
+    historical_growth = fundamentals.get('revenue_cagr_3y', 0.03)  # Use 3% (GDP growth) - professional standard
     analyst_growth_3y = fundamentals.get('analyst_revenue_growth_3y', historical_growth)
     
     # Weight: 40% historical, 60% forward
     blended_growth = historical_growth * 0.4 + analyst_growth_3y * 0.6
-    stage1_growth = min(blended_growth, 0.25)
+    
+    # === LAW OF LARGE NUMBERS: Size-based growth constraints ===
+    market_cap = fundamentals.get('market_cap', 0)
+    revenue = fundamentals.get('revenue', 0)
+    
+    # Professional Standard: Larger companies cannot sustain high growth
+    if market_cap > 3_000_000_000_000:  # >$3T (AAPL, MSFT, NVDA)
+        max_sustainable_growth = 0.15  # 15% max
+        logger.info(f"[Growth Constraint] Mega-cap >$3T: capping growth at 15%")
+    elif market_cap > 1_000_000_000_000:  # >$1T
+        max_sustainable_growth = 0.20  # 20% max
+        logger.info(f"[Growth Constraint] Large-cap >$1T: capping growth at 20%")
+    elif market_cap > 500_000_000_000:  # >$500B
+        max_sustainable_growth = 0.25  # 25% max
+        logger.info(f"[Growth Constraint] Large-cap >$500B: capping growth at 25%")
+    elif market_cap > 100_000_000_000:  # >$100B
+        max_sustainable_growth = 0.35  # 35% max
+        logger.info(f"[Growth Constraint] Mid-large cap >$100B: capping growth at 35%")
+    elif market_cap > 10_000_000_000:  # >$10B
+        max_sustainable_growth = 0.50  # 50% max
+        logger.info(f"[Growth Constraint] Mid-cap >$10B: capping growth at 50%")
+    else:  # <$10B (small caps, growth stage)
+        max_sustainable_growth = 1.0  # 100% max (allow high growth for small companies)
+        logger.info(f"[Growth Constraint] Small-cap <$10B: allowing up to 100% growth")
+    
+    # Apply constraint
+    stage1_growth = min(blended_growth, max_sustainable_growth)
+    
+    if blended_growth > max_sustainable_growth:
+        logger.warning(f"[Growth Constraint] Blended {blended_growth:.1%} capped at {max_sustainable_growth:.1%} due to market cap ${market_cap/1e9:.1f}B")
     
     logger.info(f"[Assumptions] Historical growth: {historical_growth:.1%}, "
                f"Analyst growth: {analyst_growth_3y:.1%}, "
                f"Blended: {stage1_growth:.1%}")
     
-    # === MARGIN EXPECTATIONS ===
+    # === MARGIN EXPECTATIONS WITH MEAN REVERSION ===
     current_ebitda_margin = fundamentals.get('ebitda_margin', 0.20)
+    sector = fundamentals.get('sector', 'Technology')
     
-    # Dynamic margin target based on current level
-    if current_ebitda_margin > 0.50:
-        margin_target = min(current_ebitda_margin * 1.05, 0.70)
-    elif current_ebitda_margin > 0.30:
-        margin_target = min(current_ebitda_margin * 1.10, 0.50)
+    # Professional Standard: Sector-based margin targets (mean reversion)
+    sector_margin_targets = {
+        'Technology': 0.30,
+        'Healthcare': 0.20,
+        'Financial Services': 0.25,
+        'Consumer Defensive': 0.15,
+        'Consumer Cyclical': 0.12,
+        'Industrials': 0.15,
+        'Energy': 0.18,
+        'Utilities': 0.22,
+        'Real Estate': 0.35,
+        'Communication Services': 0.25,
+        'Basic Materials': 0.18
+    }
+    sector_target = sector_margin_targets.get(sector, 0.25)
+    
+    # HANDLE ZERO/NEGATIVE MARGINS: Use sector-appropriate targets
+    if current_ebitda_margin <= 0:
+        logger.warning(f"[Margin Validation] Zero/negative EBITDA margin {current_ebitda_margin:.1%} detected")
+        logger.warning(f"[Margin Validation] Using sector-appropriate target for {sector}")
+        current_ebitda_margin = 0.05  # Start at 5%
+        margin_target = sector_target
+    # MEAN REVERSION: High margins revert down, low margins improve
+    elif current_ebitda_margin > sector_target * 1.5:  # 50% above sector
+        # High margins face competitive pressure - revert DOWN
+        margin_target = current_ebitda_margin * 0.95  # Decline 5%
+        logger.info(f"[Margin Mean Reversion] High margin {current_ebitda_margin:.1%} > sector {sector_target:.1%}, reverting DOWN to {margin_target:.1%}")
+    elif current_ebitda_margin > sector_target:
+        # Above sector average - maintain or slight decline
+        margin_target = max(current_ebitda_margin * 0.98, sector_target)  # Slight decline
+        logger.info(f"[Margin Mean Reversion] Above-average margin {current_ebitda_margin:.1%}, maintaining near current")
     else:
-        margin_target = min(current_ebitda_margin * 1.15, 0.40)
+        # Below sector average - improve towards sector norm
+        margin_target = min(current_ebitda_margin * 1.10, sector_target)  # Improve 10% max
+        logger.info(f"[Margin Mean Reversion] Below-average margin {current_ebitda_margin:.1%}, improving towards sector {sector_target:.1%}")
     
     logger.info(f"[Assumptions] EBITDA margin: {current_ebitda_margin:.1%} → {margin_target:.1%}")
     
@@ -1507,6 +1678,13 @@ def generate_3stage_assumptions(fundamentals: Dict[str, Any], custom: Dict[str, 
     capex_accelerating = fundamentals.get('capex_accelerating', False)
     capex_to_revenue = fundamentals.get('capex_to_revenue_ratio', 0.04)
     
+    # HANDLE EXTREME CAPEX: Cap at reasonable levels for growth companies
+    if capex_to_revenue > 0.50:  # More than 50% of revenue
+        logger.warning(f"[CapEx Validation] Extreme CapEx ratio {capex_to_revenue:.1%} detected")
+        logger.warning(f"[CapEx Validation] This indicates heavy growth investment phase")
+        logger.warning(f"[CapEx Validation] Capping at 15% for steady-state projection")
+        capex_to_revenue = 0.15  # Cap at 15% for projection purposes
+    
     if capex_accelerating:
         capex_pct = max(capex_to_revenue, 0.06)
     else:
@@ -1517,6 +1695,24 @@ def generate_3stage_assumptions(fundamentals: Dict[str, Any], custom: Dict[str, 
     
     # === WACC COMPONENTS ===
     beta = fundamentals.get('beta', 1.0)
+    
+    # PROFESSIONAL STANDARD: Cap beta at reasonable levels
+    # Extreme betas indicate data quality issues or unsustainable volatility
+    original_beta = beta
+    if beta > 2.5:
+        logger.warning(f"[Beta Validation] Extreme beta {beta:.2f} detected, capping at 2.5")
+        beta = 2.5
+    elif beta < 0.3:
+        logger.warning(f"[Beta Validation] Unusually low beta {beta:.2f} detected, flooring at 0.3")
+        beta = 0.3
+    
+    # Consider using industry-adjusted beta for extreme cases
+    if original_beta > 2.0:
+        industry_beta = 1.2  # Technology sector average
+        adjusted_beta = beta * 0.33 + industry_beta * 0.67  # 67% weight to industry
+        logger.info(f"[Beta Validation] Adjusting extreme beta {original_beta:.2f} → {adjusted_beta:.2f} using industry average")
+        beta = adjusted_beta
+    
     total_debt = fundamentals.get('total_debt', 0)
     operating_income = fundamentals.get('operating_income', 0)
     interest_expense = operating_income * 0.02
@@ -1608,6 +1804,16 @@ def calculate_hmodel(fundamentals: Dict[str, Any], assumptions: Dict[str, Any]) 
     
     # Extract fundamentals
     fcf_current = fundamentals['free_cash_flow']
+    
+    # HANDLE NEGATIVE FCF: Use alternative valuation approach
+    if fcf_current <= 0:
+        logger.warning(f"[H-Model] Negative FCF ${fcf_current/1e6:.1f}M detected - using revenue-based proxy")
+        # Use revenue * target FCF margin as proxy
+        revenue = fundamentals['revenue']
+        target_fcf_margin = 0.10  # Conservative 10% target
+        fcf_current = revenue * target_fcf_margin
+        logger.info(f"[H-Model] Using proxy FCF: ${fcf_current/1e6:.1f}M (Revenue ${revenue/1e6:.1f}M × {target_fcf_margin:.0%})")
+    
     current_price = fundamentals['current_price']
     shares_outstanding = fundamentals['shares_outstanding']
     cash = fundamentals['cash']
@@ -1708,12 +1914,28 @@ def generate_hmodel_assumptions(fundamentals: Dict[str, Any], custom: Dict[str, 
     custom = custom or {}
     
     # Historical growth
-    revenue_cagr = fundamentals.get('revenue_cagr_3y', 0.08)
-    fcf_cagr = fundamentals.get('fcf_cagr_3y', 0.08)
+    revenue_cagr = fundamentals.get('revenue_cagr_3y', 0.03)  # Use 3% (GDP growth) - professional standard
+    fcf_cagr = fundamentals.get('fcf_cagr_3y', 0.03)  # Use 3% (GDP growth) - professional standard
     historical_growth = max(revenue_cagr, fcf_cagr)
     
-    # Beta
+    # Beta with validation
     beta = fundamentals.get('beta', 1.0)
+    
+    # PROFESSIONAL STANDARD: Cap beta at reasonable levels
+    original_beta = beta
+    if beta > 2.5:
+        logger.warning(f"[H-Model Beta Validation] Extreme beta {beta:.2f} detected, capping at 2.5")
+        beta = 2.5
+    elif beta < 0.3:
+        logger.warning(f"[H-Model Beta Validation] Unusually low beta {beta:.2f} detected, flooring at 0.3")
+        beta = 0.3
+    
+    # Consider using industry-adjusted beta for extreme cases
+    if original_beta > 2.0:
+        industry_beta = 1.2  # Technology sector average
+        adjusted_beta = beta * 0.33 + industry_beta * 0.67  # 67% weight to industry
+        logger.info(f"[H-Model Beta Validation] Adjusting extreme beta {original_beta:.2f} → {adjusted_beta:.2f} using industry average")
+        beta = adjusted_beta
     
     # Market cap stage
     market_cap = fundamentals['current_price'] * fundamentals['shares_outstanding']
@@ -1740,7 +1962,7 @@ def generate_hmodel_assumptions(fundamentals: Dict[str, Any], custom: Dict[str, 
     
     assumptions = {
         # Growth parameters
-        'g_high': min(historical_growth, 0.20),  # Cap at 20%
+        'g_high': min(historical_growth, 1.0),  # Cap at 100% for sanity
         'g_low': 0.030,  # 3% terminal
         'H': H_default,
         
@@ -1822,6 +2044,16 @@ def calculate_wacc(risk_free_rate: float, beta: float, market_risk_premium: floa
     weight_debt = market_value_debt / total_value
     
     wacc = (weight_equity * cost_of_equity) + (weight_debt * cost_of_debt * (1 - tax_rate))
+    
+    # PROFESSIONAL STANDARD: Cap WACC at reasonable levels
+    if wacc > 0.25:  # 25% is already very high
+        logger.warning(f"[WACC Validation] Extreme WACC {wacc:.2%} detected (likely due to high beta)")
+        logger.warning(f"[WACC Validation] Beta: {beta:.2f}, CoE: {cost_of_equity:.2%}")
+        logger.warning(f"[WACC Validation] Capping WACC at 25% for valuation stability")
+        wacc = 0.25
+    elif wacc < 0.05:  # Less than 5% is unrealistically low
+        logger.warning(f"[WACC Validation] Unusually low WACC {wacc:.2%} detected, flooring at 5%")
+        wacc = 0.05
     
     logger.info(f"[WACC] CoE: {cost_of_equity:.2%}, CoD: {cost_of_debt:.2%}, "
                f"E/V: {weight_equity:.1%}, D/V: {weight_debt:.1%}, WACC: {wacc:.2%}")
