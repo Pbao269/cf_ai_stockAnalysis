@@ -541,6 +541,9 @@ def fetch_fundamentals_snapshot(ticker: str) -> Dict[str, Any]:
         total_assets = _safe_get(balance_sheet, 'Total Assets', 0)
         asset_turnover = revenue / total_assets if total_assets > 0 else 0
         
+        # === WORKING CAPITAL DAYS (best-effort from statements) ===
+        days_profile = estimate_working_capital_days(income_stmt, balance_sheet)
+
         # === MARKET/RISK METRICS ===
         beta = info.get('beta', 1.0)
         beta_5y = info.get('beta', 1.0)
@@ -672,6 +675,11 @@ def fetch_fundamentals_snapshot(ticker: str) -> Dict[str, Any]:
             'roic': roic,
             'roae': roae,
             'asset_turnover': asset_turnover,
+            
+            # Working capital days
+            'dso_days': days_profile['dso'],
+            'dio_days': days_profile['dio'],
+            'dpo_days': days_profile['dpo'],
             
             # Market/Risk Metrics
             'beta': beta,
@@ -850,6 +858,146 @@ def validate_terminal_growth(terminal_growth: float, wacc: float) -> float:
         return wacc * 0.5
     return max(0.0, min(0.05, terminal_growth))
 
+
+def get_sector_profile(sector: str) -> Dict[str, Any]:
+    """Return sector profile with typical characteristics used for adjustments."""
+    s = (sector or '').lower()
+    profiles = {
+        'technology': {
+            'category': 'high_growth',
+            'capex_min': 0.03,
+            'dso': 45.0, 'dio': 20.0, 'dpo': 40.0,
+            'exit_multiple_range': (10.0, 20.0),
+            'terminal_growth_cap': 0.045
+        },
+        'healthcare': {
+            'category': 'defensive',
+            'capex_min': 0.04,
+            'dso': 60.0, 'dio': 50.0, 'dpo': 55.0,
+            'exit_multiple_range': (9.0, 14.0),
+            'terminal_growth_cap': 0.04
+        },
+        'consumer defensive': {
+            'category': 'defensive',
+            'capex_min': 0.04,
+            'dso': 35.0, 'dio': 40.0, 'dpo': 45.0,
+            'exit_multiple_range': (8.0, 12.0),
+            'terminal_growth_cap': 0.035
+        },
+        'communication services': {
+            'category': 'mixed',
+            'capex_min': 0.05,
+            'dso': 40.0, 'dio': 25.0, 'dpo': 45.0,
+            'exit_multiple_range': (8.0, 13.0),
+            'terminal_growth_cap': 0.04
+        },
+        'consumer cyclical': {
+            'category': 'cyclical',
+            'capex_min': 0.04,
+            'dso': 40.0, 'dio': 50.0, 'dpo': 50.0,
+            'exit_multiple_range': (7.0, 12.0),
+            'terminal_growth_cap': 0.035
+        },
+        'industrials': {
+            'category': 'cyclical',
+            'capex_min': 0.05,
+            'dso': 45.0, 'dio': 55.0, 'dpo': 50.0,
+            'exit_multiple_range': (7.0, 11.0),
+            'terminal_growth_cap': 0.035
+        },
+        'basic materials': {
+            'category': 'cyclical',
+            'capex_min': 0.06,
+            'dso': 45.0, 'dio': 70.0, 'dpo': 55.0,
+            'exit_multiple_range': (6.0, 10.0),
+            'terminal_growth_cap': 0.03
+        },
+        'energy': {
+            'category': 'cyclical',
+            'capex_min': 0.07,
+            'dso': 35.0, 'dio': 80.0, 'dpo': 60.0,
+            'exit_multiple_range': (4.0, 8.0),
+            'terminal_growth_cap': 0.03
+        },
+        'utilities': {
+            'category': 'regulated',
+            'capex_min': 0.08,
+            'dso': 30.0, 'dio': 30.0, 'dpo': 45.0,
+            'exit_multiple_range': (6.0, 9.0),
+            'terminal_growth_cap': 0.025
+        },
+        'financial services': {
+            'category': 'regulated',
+            'capex_min': 0.02,
+            'dso': 30.0, 'dio': 15.0, 'dpo': 30.0,
+            'exit_multiple_range': (6.0, 10.0),
+            'terminal_growth_cap': 0.03
+        }
+    }
+    # Fallback default profile
+    for key, profile in profiles.items():
+        if key in s:
+            return profile
+    return {
+        'category': 'general',
+        'capex_min': 0.04,
+        'dso': 45.0, 'dio': 60.0, 'dpo': 45.0,
+        'exit_multiple_range': (7.0, 12.0),
+        'terminal_growth_cap': 0.035
+    }
+
+
+def apply_industry_adjustments(fundamentals: Dict[str, Any], assumptions: Dict[str, Any]) -> Dict[str, Any]:
+    """Adjust assumptions based on sector characteristics; attach notes explaining changes."""
+    sector = fundamentals.get('sector', '')
+    profile = get_sector_profile(sector)
+    notes: List[str] = []
+
+    # Working capital days
+    assumptions['dso_days'] = assumptions.get('dso_days', profile['dso'])
+    assumptions['dio_days'] = assumptions.get('dio_days', profile['dio'])
+    assumptions['dpo_days'] = assumptions.get('dpo_days', profile['dpo'])
+    notes.append(f"Working capital days set for {sector or 'General'} sector")
+
+    # CapEx floor
+    if assumptions['capex_percent_revenue'] < profile['capex_min']:
+        assumptions['capex_percent_revenue'] = profile['capex_min']
+        notes.append(f"CapEx raised to sector floor {profile['capex_min']:.1%}")
+
+    # Terminal growth cap vs sector
+    if assumptions['terminal_growth'] > profile['terminal_growth_cap']:
+        assumptions['terminal_growth'] = profile['terminal_growth_cap']
+        notes.append(f"Terminal growth capped at {profile['terminal_growth_cap']:.1%} for sector")
+
+    # High growth sectors: allow modestly higher target margin
+    if profile['category'] == 'high_growth':
+        assumptions['ebitda_margin_target'] = min(0.7, assumptions['ebitda_margin_target'] * 1.05)
+        notes.append("EBITDA margin target nudged up for high-growth sector")
+
+    # Regulated sectors: reduce market risk premium a bit, lower terminal growth
+    if profile['category'] == 'regulated':
+        assumptions['market_risk_premium'] = max(0.05, assumptions['market_risk_premium'] - 0.005)
+        assumptions['terminal_growth'] = min(assumptions['terminal_growth'], profile['terminal_growth_cap'])
+        notes.append("Adjusted risk premium and terminal growth for regulated sector")
+
+    assumptions.setdefault('industry_notes', notes)
+    return assumptions
+
+
+def get_exit_multiple_validation(sector: str, chosen_multiple: float) -> Dict[str, Any]:
+    """Compare exit multiple against sector range and return validation info."""
+    profile = get_sector_profile(sector)
+    low, high = profile['exit_multiple_range']
+    within = low <= (chosen_multiple or 0) <= high
+    message = f"Exit multiple {chosen_multiple:.1f}x within sector range {low:.1f}-{high:.1f}x" if within else \
+              f"Exit multiple {chosen_multiple:.1f}x outside sector range {low:.1f}-{high:.1f}x"
+    provenance = {
+        'source': 'heuristic_sector_ranges',
+        'vintage': datetime.now().strftime('%Y-%m'),
+        'note': 'Replace with external dataset (e.g., Damodaran) for stricter validation.'
+    }
+    return {'within_range': within, 'range_low': low, 'range_high': high, 'message': message, 'provenance': provenance}
+
 def _safe_get(df: pd.DataFrame, key: str, column: int = 0) -> float:
     """Safely get value from DataFrame"""
     try:
@@ -1024,7 +1172,7 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
     terminal_method = assumptions.get('terminal_method', 'gordon')  # 'gordon' | 'exit_multiple' | 'both'
     
     # Calculate WACC
-    wacc = calculate_wacc(
+    wacc_static = calculate_wacc(
         risk_free_rate=assumptions['risk_free_rate'],
         beta=assumptions['beta'],
         market_risk_premium=assumptions['market_risk_premium'],
@@ -1032,6 +1180,12 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
         market_value_equity=current_price * shares_outstanding,
         market_value_debt=total_debt,
         tax_rate=tax_rate
+    )
+    wacc = maybe_calculate_dynamic_wacc(
+        base_wacc=wacc_static,
+        assumptions=assumptions,
+        market_value_equity=current_price * shares_outstanding,
+        market_value_debt=total_debt
     )
     
     # Validate terminal growth < WACC
@@ -1203,7 +1357,18 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
     terminal_ebit = terminal_ebitda - terminal_depreciation
     terminal_nopat = terminal_ebit * (1 - tax_rate)
     terminal_capex = year_11_revenue * capex_pct
-    terminal_nwc_change = (year_11_revenue - year_10_revenue) * nwc_pct
+    if use_days_based_nwc:
+        wc_terminal = calculate_working_capital_change_from_days(
+            revenue_current=year_11_revenue,
+            revenue_prev=year_10_revenue,
+            cogs_margin=cogs_margin,
+            dso_days=dso_days,
+            dio_days=dio_days,
+            dpo_days=dpo_days
+        )
+        terminal_nwc_change = wc_terminal['delta_nwc']
+    else:
+        terminal_nwc_change = (year_11_revenue - year_10_revenue) * nwc_pct
     terminal_fcf = terminal_nopat + terminal_depreciation - terminal_capex - terminal_nwc_change
     
     # Terminal Value methods
@@ -1211,6 +1376,12 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
     tv_exit_multiple = None
     if terminal_method in ('exit_multiple', 'both'):
         tv_exit_multiple = calculate_terminal_value_exit_multiple(terminal_ebitda, exit_multiple or 10.0)
+    # Validate chosen exit multiple vs sector norms
+    exit_multiple_validation = None
+    if tv_exit_multiple is not None:
+        exit_multiple_validation = get_exit_multiple_validation(
+            fundamentals.get('sector', ''), float(exit_multiple or 10.0)
+        )
     if terminal_method == 'gordon':
         terminal_value = tv_gordon
     elif terminal_method == 'exit_multiple':
@@ -1230,6 +1401,9 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
     
     # Terminal value as % of EV
     terminal_value_percent = pv_terminal_value / enterprise_value if enterprise_value > 0 else 0
+    terminal_dominance_warning = None
+    if terminal_value_percent > 0.75:
+        terminal_dominance_warning = "Terminal value exceeds 75% of EV; review growth/WACC/forecast horizon."
     
     # === EQUITY VALUE ===
     # Use last updated debt and shares after dynamics
@@ -1277,7 +1451,11 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
         'terminal_methods': {
             'gordon_growth': tv_gordon,
             'exit_multiple': tv_exit_multiple,
-            'method_used': terminal_method
+            'method_used': terminal_method,
+            'exit_multiple_validation': exit_multiple_validation
+        },
+        'warnings': {
+            'terminal_dominance': terminal_dominance_warning
         },
         'calculation_date': datetime.now().isoformat()
     }
@@ -1413,6 +1591,9 @@ def generate_3stage_assumptions(fundamentals: Dict[str, Any], custom: Dict[str, 
     
     # Override with custom
     assumptions.update(custom)
+
+    # Apply sector/industry adjustments and attach notes
+    assumptions = apply_industry_adjustments(fundamentals, assumptions)
     
     return assumptions
 
@@ -1646,6 +1827,23 @@ def calculate_wacc(risk_free_rate: float, beta: float, market_risk_premium: floa
                f"E/V: {weight_equity:.1%}, D/V: {weight_debt:.1%}, WACC: {wacc:.2%}")
     
     return wacc
+
+
+def maybe_calculate_dynamic_wacc(base_wacc: float, assumptions: Dict[str, Any],
+                                 market_value_equity: float, market_value_debt: float) -> float:
+    """Optionally adjust WACC slightly over time based on leverage if enabled.
+    This is a light-touch approach; default is to keep WACC static for stability.
+    """
+    if not assumptions.get('enable_dynamic_wacc'):
+        return base_wacc
+    total_value = market_value_equity + market_value_debt
+    if total_value <= 0:
+        return base_wacc
+    leverage = market_value_debt / total_value
+    # Shift WACC by small band around base (±50 bps) based on leverage drift from 30%
+    adjustment = (leverage - 0.30) * 0.01  # 1% per 100% change in leverage
+    adjusted = max(0.0, base_wacc + adjustment)
+    return adjusted
 
 
 def generate_recommendation(upside: float) -> str:
