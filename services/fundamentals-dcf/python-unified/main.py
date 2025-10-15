@@ -356,6 +356,77 @@ def run_unified_dcf():
         }), 500
 
 
+@app.route('/scenarios', methods=['POST'])
+def run_scenarios():
+    """Run Base/Bull/Bear scenarios and return probability-weighted result."""
+    try:
+        data = request.json
+        ticker = (data or {}).get('ticker', '').upper()
+        custom = (data or {}).get('assumptions', {})
+        probs = (data or {}).get('probabilities', {'base': 0.6, 'bull': 0.2, 'bear': 0.2})
+
+        if not ticker:
+            return jsonify({'success': False, 'error': 'Ticker required'}), 400
+
+        fundamentals = (data or {}).get('fundamentals')
+        if not fundamentals:
+            fundamentals = fetch_fundamentals_snapshot(ticker)
+
+        base_assump = generate_3stage_assumptions(fundamentals, custom)
+        bull_assump = dict(base_assump)
+        bear_assump = dict(base_assump)
+
+        # Bull tweaks (more growth, higher margin, slightly higher exit multiple)
+        bull_assump['stage1_revenue_growth'] = min(base_assump['stage1_revenue_growth'] * 1.25, 0.30)
+        bull_assump['stage2_ending_growth'] = min(base_assump['stage2_ending_growth'] * 1.25, 0.12)
+        bull_assump['ebitda_margin_target'] = min(base_assump['ebitda_margin_target'] * 1.05, 0.65)
+        bull_assump['exit_multiple_ev_ebitda'] = (base_assump.get('exit_multiple_ev_ebitda') or 10.0) * 1.2
+
+        # Bear tweaks (less growth, lower margin, lower exit multiple)
+        bear_assump['stage1_revenue_growth'] = max(base_assump['stage1_revenue_growth'] * 0.7, 0.02)
+        bear_assump['stage2_ending_growth'] = max(base_assump['stage2_ending_growth'] * 0.7, 0.01)
+        bear_assump['ebitda_margin_target'] = max(base_assump['ebitda_margin_target'] * 0.9, base_assump['ebitda_margin_current'])
+        bear_assump['exit_multiple_ev_ebitda'] = max(5.0, (base_assump.get('exit_multiple_ev_ebitda') or 10.0) * 0.8)
+
+        scenarios = {
+            'base': base_assump,
+            'bull': bull_assump,
+            'bear': bear_assump
+        }
+
+        results = {}
+        for name, assump in scenarios.items():
+            try:
+                results[name] = calculate_3stage_dcf(fundamentals, assump)
+            except Exception as e:
+                logger.error(f"Scenario {name} failed: {e}")
+                results[name] = None
+
+        # Probability-weighted fair value (ignore missing)
+        total_weight = 0.0
+        weighted_value = 0.0
+        for name, res in results.items():
+            p = float(probs.get(name, 0.0))
+            if res and p > 0:
+                weighted_value += res['price_per_share'] * p
+                total_weight += p
+        weighted_fair_value = weighted_value / total_weight if total_weight > 0 else None
+
+        return jsonify({
+            'success': True,
+            'data': {
+                'ticker': ticker,
+                'scenarios': results,
+                'probabilities': probs,
+                'weighted_fair_value': weighted_fair_value
+            },
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"Scenarios error: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 # ============================================================================
 # FUNDAMENTALS DATA FETCHING (from python-data)
 # ============================================================================
@@ -691,6 +762,94 @@ def calculate_fcf_cagr(cashflow_df: pd.DataFrame, years: int) -> float:
         return 0.08
 
 
+def estimate_working_capital_days(income_stmt: pd.DataFrame, balance_sheet: pd.DataFrame) -> Dict[str, float]:
+    """Estimate DSO/DIO/DPO from financial statements when available.
+    Returns defaults if insufficient data.
+    """
+    try:
+        revenue_series = income_stmt.loc['Total Revenue'].values if 'Total Revenue' in income_stmt.index else []
+        revenue_ttm = revenue_series[0] if len(revenue_series) > 0 else 0
+        cogs = income_stmt.loc['Cost Of Revenue'].values[0] if 'Cost Of Revenue' in income_stmt.index else 0
+
+        ar = balance_sheet.loc['Accounts Receivable'].values[0] if 'Accounts Receivable' in balance_sheet.index else 0
+        inventory = balance_sheet.loc['Inventory'].values[0] if 'Inventory' in balance_sheet.index else 0
+        ap = balance_sheet.loc['Accounts Payable'].values[0] if 'Accounts Payable' in balance_sheet.index else 0
+
+        # Avoid divide by zero; use conservative defaults when missing
+        if revenue_ttm <= 0:
+            return {'dso': 45.0, 'dio': 60.0, 'dpo': 45.0}
+
+        daily_revenue = revenue_ttm / 365.0
+        daily_cogs = (cogs if cogs and cogs > 0 else revenue_ttm * 0.6) / 365.0
+
+        dso = float(ar / daily_revenue) if daily_revenue > 0 and ar > 0 else 45.0
+        dio = float(inventory / daily_cogs) if daily_cogs > 0 and inventory > 0 else 60.0
+        dpo = float(ap / daily_cogs) if daily_cogs > 0 and ap > 0 else 45.0
+
+        # Clamp to reasonable bounds
+        dso = max(10.0, min(120.0, dso))
+        dio = max(10.0, min(180.0, dio))
+        dpo = max(10.0, min(120.0, dpo))
+
+        return {'dso': dso, 'dio': dio, 'dpo': dpo}
+    except Exception:
+        return {'dso': 45.0, 'dio': 60.0, 'dpo': 45.0}
+
+
+def calculate_working_capital_change_from_days(
+    revenue_current: float,
+    revenue_prev: float,
+    cogs_margin: float,
+    dso_days: float,
+    dio_days: float,
+    dpo_days: float
+) -> Dict[str, float]:
+    """Compute change in working capital using DSO/DIO/DPO.
+    Returns component deltas and total delta.
+    """
+    # Derive COGS from revenue and margin
+    cogs_current = max(0.0, revenue_current * cogs_margin)
+    cogs_prev = max(0.0, revenue_prev * cogs_margin)
+
+    daily_rev_curr = revenue_current / 365.0
+    daily_rev_prev = revenue_prev / 365.0
+    daily_cogs_curr = cogs_current / 365.0
+    daily_cogs_prev = cogs_prev / 365.0
+
+    ar_curr = dso_days * daily_rev_curr
+    ar_prev = dso_days * daily_rev_prev
+    inv_curr = dio_days * daily_cogs_curr
+    inv_prev = dio_days * daily_cogs_prev
+    ap_curr = dpo_days * daily_cogs_curr
+    ap_prev = dpo_days * daily_cogs_prev
+
+    delta_ar = ar_curr - ar_prev
+    delta_inv = inv_curr - inv_prev
+    delta_ap = ap_curr - ap_prev
+
+    delta_nwc = (delta_ar + delta_inv) - delta_ap
+    return {
+        'delta_ar': delta_ar,
+        'delta_inventory': delta_inv,
+        'delta_ap': delta_ap,
+        'delta_nwc': delta_nwc
+    }
+
+
+def calculate_terminal_value_exit_multiple(terminal_ebitda: float, exit_multiple: float) -> float:
+    """Terminal value via Exit Multiple method (EV/EBITDA)."""
+    exit_multiple = max(3.0, min(30.0, float(exit_multiple or 10.0)))
+    return terminal_ebitda * exit_multiple
+
+
+def validate_terminal_growth(terminal_growth: float, wacc: float) -> float:
+    """Ensure terminal growth is realistic and less than WACC; clamp to GDP-like range."""
+    if wacc <= 0:
+        return min(0.05, max(0.0, terminal_growth))
+    if terminal_growth >= wacc:
+        return wacc * 0.5
+    return max(0.0, min(0.05, terminal_growth))
+
 def _safe_get(df: pd.DataFrame, key: str, column: int = 0) -> float:
     """Safely get value from DataFrame"""
     try:
@@ -852,8 +1011,17 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
     ebitda_margin_target = assumptions['ebitda_margin_target']
     tax_rate = assumptions['tax_rate']
     capex_pct = assumptions['capex_percent_revenue']
-    nwc_pct = assumptions['nwc_percent_revenue']
+    # Improved NWC modeling via DSO/DIO/DPO; fall back to simple percent if unavailable
+    use_days_based_nwc = assumptions.get('use_days_based_nwc', True)
+    dso_days = assumptions.get('dso_days', 45.0)
+    dio_days = assumptions.get('dio_days', 60.0)
+    dpo_days = assumptions.get('dpo_days', 45.0)
+    nwc_pct = assumptions.get('nwc_percent_revenue', 0.02)
     da_pct = assumptions['depreciation_percent_revenue']
+    annual_buyback_rate = max(0.0, min(0.1, float(assumptions.get('annual_buyback_rate', 0.0))))
+    annual_debt_paydown_rate = max(0.0, min(0.2, float(assumptions.get('annual_debt_paydown_rate', 0.0))))
+    exit_multiple = assumptions.get('exit_multiple_ev_ebitda')
+    terminal_method = assumptions.get('terminal_method', 'gordon')  # 'gordon' | 'exit_multiple' | 'both'
     
     # Calculate WACC
     wacc = calculate_wacc(
@@ -867,14 +1035,18 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
     )
     
     # Validate terminal growth < WACC
-    if terminal_growth >= wacc:
-        logger.warning(f"Terminal growth {terminal_growth:.2%} >= WACC {wacc:.2%}, adjusting")
-        terminal_growth = wacc * 0.5
+    validated_terminal_growth = validate_terminal_growth(terminal_growth, wacc)
+    if abs(validated_terminal_growth - terminal_growth) > 1e-9:
+        logger.warning(f"Terminal growth {terminal_growth:.2%} adjusted to {validated_terminal_growth:.2%} vs WACC {wacc:.2%}")
+        terminal_growth = validated_terminal_growth
         assumptions['terminal_growth'] = terminal_growth
     
     # === STAGE 1: High Growth (Years 1-5) ===
     projections = []
     current_revenue = revenue
+    cogs_margin = max(0.0, min(0.95, 1.0 - fundamentals.get('gross_margin', 0.4)))
+    current_shares = shares_outstanding
+    current_debt = total_debt
     
     for year in range(1, 6):
         # Revenue projection
@@ -897,9 +1069,21 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
         # CapEx
         capex = projected_revenue * capex_pct
         
-        # Change in NWC
-        revenue_change = projected_revenue - (current_revenue * ((1 + stage1_growth) ** (year - 1)))
-        nwc_change = revenue_change * nwc_pct
+        # Change in NWC (days-based preferred)
+        prior_year_revenue = current_revenue * ((1 + stage1_growth) ** (year - 1))
+        if use_days_based_nwc:
+            wc = calculate_working_capital_change_from_days(
+                revenue_current=projected_revenue,
+                revenue_prev=prior_year_revenue,
+                cogs_margin=cogs_margin,
+                dso_days=dso_days,
+                dio_days=dio_days,
+                dpo_days=dpo_days
+            )
+            nwc_change = wc['delta_nwc']
+        else:
+            revenue_change = projected_revenue - prior_year_revenue
+            nwc_change = revenue_change * nwc_pct
         
         # Free Cash Flow = NOPAT + D&A - CapEx - ΔNWC
         fcf = nopat + depreciation - capex - nwc_change
@@ -908,6 +1092,12 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
         discount_factor = (1 + wacc) ** year
         pv_fcf = fcf / discount_factor
         
+        # Shares buyback impact (reduce shares outstanding)
+        current_shares = current_shares * (1.0 - annual_buyback_rate)
+
+        # Debt paydown (reduce outstanding debt)
+        current_debt = current_debt * (1.0 - annual_debt_paydown_rate)
+
         projections.append({
             'year': year,
             'stage': 1,
@@ -921,7 +1111,9 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
             'nwc_change': nwc_change,
             'free_cash_flow': fcf,
             'discount_factor': discount_factor,
-            'pv_fcf': pv_fcf
+            'pv_fcf': pv_fcf,
+            'shares_outstanding': current_shares,
+            'total_debt': current_debt
         })
     
     # === STAGE 2: Transition (Years 6-10) ===
@@ -957,8 +1149,19 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
         
         # Change in NWC
         prior_revenue = projections[year - 2]['revenue']
-        revenue_change = projected_revenue - prior_revenue
-        nwc_change = revenue_change * nwc_pct
+        if use_days_based_nwc:
+            wc = calculate_working_capital_change_from_days(
+                revenue_current=projected_revenue,
+                revenue_prev=prior_revenue,
+                cogs_margin=cogs_margin,
+                dso_days=dso_days,
+                dio_days=dio_days,
+                dpo_days=dpo_days
+            )
+            nwc_change = wc['delta_nwc']
+        else:
+            revenue_change = projected_revenue - prior_revenue
+            nwc_change = revenue_change * nwc_pct
         
         # Free Cash Flow
         fcf = nopat + depreciation - capex - nwc_change
@@ -967,6 +1170,10 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
         discount_factor = (1 + wacc) ** year
         pv_fcf = fcf / discount_factor
         
+        # Shares buyback and debt paydown continue
+        current_shares = current_shares * (1.0 - annual_buyback_rate)
+        current_debt = current_debt * (1.0 - annual_debt_paydown_rate)
+
         projections.append({
             'year': year,
             'stage': 2,
@@ -981,7 +1188,9 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
             'free_cash_flow': fcf,
             'discount_factor': discount_factor,
             'pv_fcf': pv_fcf,
-            'growth_rate': current_growth
+            'growth_rate': current_growth,
+            'shares_outstanding': current_shares,
+            'total_debt': current_debt
         })
     
     # === STAGE 3: Terminal Value (Perpetuity) ===
@@ -997,8 +1206,20 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
     terminal_nwc_change = (year_11_revenue - year_10_revenue) * nwc_pct
     terminal_fcf = terminal_nopat + terminal_depreciation - terminal_capex - terminal_nwc_change
     
-    # Gordon Growth formula: TV = FCF / (WACC - g)
-    terminal_value = terminal_fcf / (wacc - terminal_growth)
+    # Terminal Value methods
+    tv_gordon = terminal_fcf / (wacc - terminal_growth)
+    tv_exit_multiple = None
+    if terminal_method in ('exit_multiple', 'both'):
+        tv_exit_multiple = calculate_terminal_value_exit_multiple(terminal_ebitda, exit_multiple or 10.0)
+    if terminal_method == 'gordon':
+        terminal_value = tv_gordon
+    elif terminal_method == 'exit_multiple':
+        terminal_value = tv_exit_multiple if tv_exit_multiple is not None else tv_gordon
+    else:  # both -> average for headline, include details
+        if tv_exit_multiple is None:
+            terminal_value = tv_gordon
+        else:
+            terminal_value = (tv_gordon + tv_exit_multiple) / 2.0
     
     # Discount terminal value to present (Year 0)
     pv_terminal_value = terminal_value / ((1 + wacc) ** 10)
@@ -1011,14 +1232,16 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
     terminal_value_percent = pv_terminal_value / enterprise_value if enterprise_value > 0 else 0
     
     # === EQUITY VALUE ===
-    net_debt = total_debt - cash
+    # Use last updated debt and shares after dynamics
+    net_debt = current_debt - cash
     equity_value = enterprise_value - net_debt
     
     # === PRICE PER SHARE ===
-    if shares_outstanding <= 0:
-        raise ValueError(f"Invalid shares outstanding: {shares_outstanding}")
-    
-    price_per_share = equity_value / shares_outstanding
+    final_shares = max(1.0, current_shares)
+    if final_shares <= 0:
+        raise ValueError(f"Invalid shares outstanding: {final_shares}")
+
+    price_per_share = equity_value / final_shares
     
     # Upside/Downside
     upside_downside = ((price_per_share - current_price) / current_price) * 100 if current_price > 0 else 0
@@ -1051,6 +1274,11 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
             'growth_rate': terminal_growth
         },
         'assumptions': assumptions,
+        'terminal_methods': {
+            'gordon_growth': tv_gordon,
+            'exit_multiple': tv_exit_multiple,
+            'method_used': terminal_method
+        },
         'calculation_date': datetime.now().isoformat()
     }
 
@@ -1117,6 +1345,18 @@ def generate_3stage_assumptions(fundamentals: Dict[str, Any], custom: Dict[str, 
     cost_of_debt = interest_expense / total_debt if total_debt > 0 else 0.04
     cost_of_debt = max(0.03, min(0.10, cost_of_debt))
     
+    # === Working capital days (estimate from statements when possible) ===
+    dso_dio_dpo = {'dso': 45.0, 'dio': 60.0, 'dpo': 45.0}
+    try:
+        # Attempt to estimate from yfinance dataframes if available in fundamentals
+        # Not stored directly; fall back to heuristics based on margins/sector behavior
+        if fundamentals.get('gross_margin', 0.4) > 0.6:
+            dso_dio_dpo = {'dso': 40.0, 'dio': 30.0, 'dpo': 50.0}
+        elif fundamentals.get('gross_margin', 0.4) < 0.3:
+            dso_dio_dpo = {'dso': 55.0, 'dio': 70.0, 'dpo': 45.0}
+    except Exception:
+        pass
+
     # === BUILD ASSUMPTIONS ===
     assumptions = {
         # Stage 1: High Growth (Years 1-5)
@@ -1139,6 +1379,11 @@ def generate_3stage_assumptions(fundamentals: Dict[str, Any], custom: Dict[str, 
         'capex_percent_revenue': capex_pct,
         'nwc_percent_revenue': 0.02,
         'depreciation_percent_revenue': 0.03,
+        # Working capital modeling
+        'use_days_based_nwc': True,
+        'dso_days': dso_dio_dpo['dso'],
+        'dio_days': dso_dio_dpo['dio'],
+        'dpo_days': dso_dio_dpo['dpo'],
         
         # WACC components
         'risk_free_rate': DEFAULT_RISK_FREE_RATE,
@@ -1146,6 +1391,14 @@ def generate_3stage_assumptions(fundamentals: Dict[str, Any], custom: Dict[str, 
         'beta': beta,
         'cost_of_debt': cost_of_debt,
         'tax_rate': DEFAULT_TAX_RATE,
+        
+        # Capital structure dynamics (simple), can be overridden
+        'annual_buyback_rate': min(0.03, max(0.0, fundamentals.get('share_repurchases', 0) / (fundamentals.get('market_cap', 0) or 1))),
+        'annual_debt_paydown_rate': 0.05 if total_debt > 0 else 0.0,
+        
+        # Terminal value options
+        'terminal_method': 'both',
+        'exit_multiple_ev_ebitda': 10.0,
         
         # Moat & Analyst Context
         'economic_moat': moat,

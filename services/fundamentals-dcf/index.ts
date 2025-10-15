@@ -149,8 +149,6 @@ export default {
       
       const ticker = (body.ticker || '').toUpperCase();
       
-      console.log(`[Unified-DCF] Starting request for ticker: ${ticker}`);
-      
       if (!ticker) {
         return new Response(JSON.stringify({
           success: false,
@@ -160,8 +158,6 @@ export default {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
       }
-
-      console.log(`[Unified-DCF] Processing ticker: ${ticker}`);
 
       // Check cache first
       const cacheKey = `unified-dcf:${ticker}`;
@@ -179,7 +175,6 @@ export default {
       }
 
       // === STEP 1: Fetch Fundamentals ===
-      console.log(`[Unified-DCF] Step 1: Fetching fundamentals for ${ticker}`);
       let fundamentals: FundamentalsSnapshot;
       
       if (env.UNIFIED_DCF_URL) {
@@ -204,8 +199,6 @@ export default {
       }
 
       // === STEP 2: Run Unified DCF Service ===
-      console.log(`[Unified-DCF] Step 2: Running unified DCF service`);
-      
       if (!env.UNIFIED_DCF_URL) {
         throw new Error('UNIFIED_DCF_URL not configured');
       }
@@ -226,8 +219,6 @@ export default {
       }
 
       const unifiedData = unifiedResult.data;
-      console.log(`[Unified-DCF] Unified service response received for ${ticker}`);
-      
       const modelResults = unifiedData.individual_valuations.map((valuation: any) => ({
         model: valuation.model,
         result: valuation
@@ -237,10 +228,7 @@ export default {
         throw new Error('Unified DCF service returned no results');
       }
 
-      console.log(`[Unified-DCF] Found ${modelResults.length} model results for ${ticker}`);
-
       // === STEP 3: Use Unified Results ===
-      console.log(`[Unified-DCF] Step 3: Using unified consensus results`);
       
       // Use the consensus valuation from the unified service
       const consensusValuation = unifiedData.consensus_valuation;
@@ -275,8 +263,7 @@ export default {
           method: consensusValuation.method || 'Equal weight average of available models'
         },
         recommendation,
-        timestamp: new Date().toISOString(),
-        debug_ai_binding: !!env.AI  // Debug field to check if AI binding exists
+        timestamp: new Date().toISOString()
       } as any;
 
       // Attach analyst consensus for UI (from fundamentals data service)
@@ -291,25 +278,9 @@ export default {
         };
       }
 
-      console.log(`[Unified-DCF] About to start AI analysis for ${ticker}`);
-      
       // AI: Explain gap between DCF and analyst consensus (CPU optimized)
       try {
-        console.log('[AI] Checking AI binding:', !!env.AI);
         if (env.AI) {
-          console.log('[AI] Starting AI analysis for', ticker);
-          
-          // Simple test first
-          console.log('[AI] Running simple test...');
-          const testRes = await env.AI.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
-            prompt: 'Say "AI working" in one word.'
-          });
-          
-          console.log('[AI] Test response:', testRes);
-          finalResult.ai_test = (testRes as any)?.response || 'No test response';
-          
-          // Now try the full analysis
-          console.log('[AI] Running full analysis...');
           finalResult.ai_raw_response = await explainGapWithAI(env.AI, {
             ticker,
             company_name: fundamentals.company_name,
@@ -321,15 +292,10 @@ export default {
             hmodel: modelResults.find((r: any) => r.model === 'hmodel')?.result,
             fundamentals
           });
-          console.log('[AI] AI analysis completed for', ticker);
-        } else {
-          console.log('[AI] Skipping AI analysis - no AI binding');
-          finalResult.ai_status = 'skipped - no AI binding';
         }
       } catch (e) {
         console.warn('[Unified-DCF] AI gap explanation failed:', e);
         finalResult.ai_error = e instanceof Error ? e.message : 'AI processing failed';
-        finalResult.ai_status = 'failed';
       }
 
       // Cache the result (1 hour TTL)
@@ -383,8 +349,6 @@ async function explainGapWithAI(ai: Ai, input: {
   hmodel?: any;
   fundamentals: any;
 }): Promise<string> {
-  console.log('[AI] explainGapWithAI called with:', input.ticker);
-  
   const { ticker, company_name, sector, current_price, analyst_avg_target, dcf_weighted_fair_value, three_stage, hmodel, fundamentals } = input;
 
   // CPU-optimized: Minimal string operations, no heavy parsing
@@ -394,6 +358,7 @@ async function explainGapWithAI(ai: Ai, input: {
   const fcfMargin = Math.round((fundamentals.fcf_margin || 0) * 1000) / 10;
   const moat = fundamentals.economic_moat || 'unknown';
   const moatScore = Math.round(fundamentals.moat_strength_score || 0);
+  const analystCount = Number(fundamentals.analyst_count || 0);
 
   const threeStagePrice = three_stage?.price_per_share || 0;
   const hmodelPrice = hmodel?.price_per_share || 0;
@@ -404,20 +369,41 @@ async function explainGapWithAI(ai: Ai, input: {
     hmodel?.assumptions?.g_low || 0
   );
 
-  // Simplified prompt - no complex string formatting
-  const prompt = `Analyze ${ticker} (${company_name || 'Unknown'}) valuation gap:
-Current: $${current_price.toFixed(0)} | Analyst: $${analyst_avg_target.toFixed(0)} | DCF: $${dcf_weighted_fair_value.toFixed(0)}
-3-Stage: $${threeStagePrice.toFixed(0)} (WACC ${(threeStageWacc * 100).toFixed(0)}%) | H-Model: $${hmodelPrice.toFixed(0)} (WACC ${(hmodelWacc * 100).toFixed(0)}%)
-Growth: ${histGrowth}% hist, ${analystGrowth}% analyst | Margins: ${ebitdaMargin}% EBITDA, ${fcfMargin}% FCF | Moat: ${moat} (${moatScore}/100)
-Explain the gap in 2-3 sentences.`;
+  // Enhanced prompt with role definition and company-specific analysis
+  const prompt = `You are a Senior Equity Research Analyst at a top-tier investment bank with 15+ years of experience in ${sector || 'equity'} analysis. You specialize in DCF modeling and valuation discrepancies.
 
-  console.log('[AI] Sending prompt to AI:', prompt.substring(0, 100) + '...');
-  
+COMPANY: ${ticker} (${company_name || 'Unknown Company'})
+SECTOR: ${sector || 'Unknown'} | INDUSTRY: ${fundamentals.industry || 'Unknown'}
+
+CURRENT VALUATION SITUATION:
+• Market Price: $${current_price.toFixed(2)}
+• Analyst Consensus Target: $${analyst_avg_target.toFixed(2)} (${analystCount} analysts)
+• DCF Weighted Fair Value: $${dcf_weighted_fair_value.toFixed(2)}
+
+DCF MODEL BREAKDOWN:
+• 3-Stage DCF: $${threeStagePrice.toFixed(2)} (WACC: ${(threeStageWacc * 100).toFixed(1)}%)
+• H-Model DCF: $${hmodelPrice.toFixed(2)} (WACC: ${(hmodelWacc * 100).toFixed(1)}%)
+• Terminal Growth Rate: ${(terminalGrowth * 100).toFixed(1)}%
+
+FUNDAMENTAL METRICS:
+• Historical Revenue Growth (3Y): ${histGrowth}%
+• Analyst Expected Growth: ${analystGrowth}%
+• EBITDA Margin: ${ebitdaMargin}%
+• Free Cash Flow Margin: ${fcfMargin}%
+• Economic Moat: ${moat} (Strength: ${moatScore}/100)
+
+TASK: As a senior analyst, provide a direct 3-4 sentence analysis of the valuation gap. Start immediately with the analysis - no introductory statements. Focus on:
+1. Company-specific factors driving the discrepancy
+2. Which valuation method appears most reasonable for this ${sector || 'sector'} company
+3. Key assumptions that could explain the gap
+4. Market sentiment vs fundamental reality
+
+Be specific about ${ticker}'s business model, competitive position, and growth prospects. Avoid generic statements, introductory phrases, or words like "interesting" or "intriguing".`;
+
   const res = await ai.run('@cf/meta/llama-3.1-8b-instruct-fp8', {
-    prompt: prompt
+    prompt: prompt,
+    max_tokens: 200  // Increased for more detailed analysis
   });
-
-  console.log('[AI] AI response received:', res);
   
   // Return raw response - no parsing, no JSON processing
   return (res as any)?.response || 'AI analysis unavailable';
