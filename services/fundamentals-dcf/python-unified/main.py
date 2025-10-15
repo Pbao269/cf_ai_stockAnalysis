@@ -274,10 +274,47 @@ def run_unified_dcf():
         if not results:
             raise Exception("Both DCF models failed")
         
-        # Calculate consensus
+        # Calculate consensus with intelligent weighting
+        # H-Model is better for high-growth companies (natural decay)
+        # 3-Stage is better for mature companies (explicit stages)
+        
+        market_cap = fundamentals.get('market_cap', 0)
+        revenue_growth = fundamentals.get('revenue_cagr_3y', 0)
+        
+        # Determine weights based on company profile
+        if len(results) == 2:
+            # High-growth companies: Favor H-Model (natural decay)
+            if revenue_growth > 0.30:  # >30% growth
+                hmodel_weight = 0.70  # 70% H-Model, 30% 3-Stage
+                logger.info(f"[Consensus] High-growth company ({revenue_growth:.1%}): H-Model 70%, 3-Stage 30%")
+            # Mega-cap companies: Favor H-Model (avoids size-cap distortion)
+            elif market_cap > 1_000_000_000_000:  # >$1T
+                hmodel_weight = 0.60  # 60% H-Model, 40% 3-Stage
+                logger.info(f"[Consensus] Mega-cap ${market_cap/1e12:.1f}T: H-Model 60%, 3-Stage 40%")
+            # Mature, stable companies: Favor 3-Stage (explicit planning)
+            elif revenue_growth < 0.10:  # <10% growth
+                hmodel_weight = 0.40  # 40% H-Model, 60% 3-Stage
+                logger.info(f"[Consensus] Mature company ({revenue_growth:.1%}): H-Model 40%, 3-Stage 60%")
+            # Mid-growth companies: Equal weight
+            else:
+                hmodel_weight = 0.50  # 50% H-Model, 50% 3-Stage
+                logger.info(f"[Consensus] Mid-growth company: Equal weighting 50/50")
+            
+            # Apply weights
+            prices_weighted = []
+            for r in results:
+                weight = hmodel_weight if r['model'] == 'hmodel' else (1 - hmodel_weight)
+                prices_weighted.append(r['result']['price_per_share'] * weight)
+            
+            weighted_fair_value = sum(prices_weighted)
+            simple_average = sum([r['result']['price_per_share'] for r in results]) / len(results)
+        else:
+            # Fallback to simple average if only one model available
+            prices = [r['result']['price_per_share'] for r in results]
+            weighted_fair_value = sum(prices) / len(prices)
+            simple_average = weighted_fair_value
+        
         prices = [r['result']['price_per_share'] for r in results]
-        weighted_fair_value = sum(prices) / len(prices)  # Simple average for now
-        simple_average = weighted_fair_value
         range_low = min(prices)
         range_high = max(prices)
         
@@ -330,7 +367,17 @@ def run_unified_dcf():
                     'high': range_high
                 },
                 'upside_to_weighted': upside_to_weighted,
-                'method': 'Equal weight average of available models'
+                'weighting_method': {
+                    'description': 'Intelligent weighting based on company profile',
+                    'rationale': (
+                        f"High-growth ({revenue_growth:.1%}): H-Model 70%, 3-Stage 30% (natural decay better)" if revenue_growth > 0.30 else
+                        f"Mega-cap (${market_cap/1e12:.1f}T): H-Model 60%, 3-Stage 40% (avoids size-cap distortion)" if market_cap > 1e12 else
+                        f"Mature ({revenue_growth:.1%}): H-Model 40%, 3-Stage 60% (explicit stages better)" if revenue_growth < 0.10 else
+                        "Mid-growth: Equal 50/50 weighting"
+                    ) if len(results) == 2 else 'Single model available',
+                    'hmodel_weight': hmodel_weight if len(results) == 2 else None,
+                    'stage3_weight': (1 - hmodel_weight) if len(results) == 2 else None
+                }
             },
             'recommendation': recommendation,
             'timestamp': datetime.now().isoformat()
@@ -1278,21 +1325,9 @@ def calculate_3stage_dcf(fundamentals: Dict[str, Any], assumptions: Dict[str, An
     current_debt = total_debt
     
     for year in range(1, 6):
-        # PROFESSIONAL STANDARD: Logarithmic growth decay (high growth cannot compound indefinitely)
-        # Instead of constant growth, apply decay factor each year
-        if stage1_growth > 0.25:  # Only apply decay for high-growth companies
-            # Decay factor: Year 1 = 100%, Year 2 = 90%, Year 3 = 81%, etc.
-            decay_factor = 0.92 ** (year - 1)  # 8% decay per year
-            effective_growth = stage1_growth * decay_factor
-            logger.info(f"[Growth Decay] Year {year}: {stage1_growth:.1%} → {effective_growth:.1%} (decay: {decay_factor:.1%})")
-        else:
-            effective_growth = stage1_growth
-        
-        # Revenue projection with decayed growth
-        if year == 1:
-            projected_revenue = current_revenue * (1 + effective_growth)
-        else:
-            projected_revenue = projections[year - 2]['revenue'] * (1 + effective_growth)
+        # Revenue projection - use constant Stage 1 growth
+        # (H-Model handles decay naturally, 3-Stage uses explicit stages)
+        projected_revenue = current_revenue * ((1 + stage1_growth) ** year)
         
         # EBITDA (linear margin expansion to target)
         margin_progress = year / 5.0
@@ -1585,35 +1620,12 @@ def generate_3stage_assumptions(fundamentals: Dict[str, Any], custom: Dict[str, 
     # Weight: 40% historical, 60% forward
     blended_growth = historical_growth * 0.4 + analyst_growth_3y * 0.6
     
-    # === LAW OF LARGE NUMBERS: Size-based growth constraints ===
+    # NO HARD CAPS - Let H-Model handle high growth with natural decay
+    # 3-Stage model uses blended growth as-is for companies that prefer this approach
+    stage1_growth = min(blended_growth, 1.0)  # Only sanity cap at 100%
+    
     market_cap = fundamentals.get('market_cap', 0)
     revenue = fundamentals.get('revenue', 0)
-    
-    # Professional Standard: Larger companies cannot sustain high growth
-    if market_cap > 3_000_000_000_000:  # >$3T (AAPL, MSFT, NVDA)
-        max_sustainable_growth = 0.15  # 15% max
-        logger.info(f"[Growth Constraint] Mega-cap >$3T: capping growth at 15%")
-    elif market_cap > 1_000_000_000_000:  # >$1T
-        max_sustainable_growth = 0.20  # 20% max
-        logger.info(f"[Growth Constraint] Large-cap >$1T: capping growth at 20%")
-    elif market_cap > 500_000_000_000:  # >$500B
-        max_sustainable_growth = 0.25  # 25% max
-        logger.info(f"[Growth Constraint] Large-cap >$500B: capping growth at 25%")
-    elif market_cap > 100_000_000_000:  # >$100B
-        max_sustainable_growth = 0.35  # 35% max
-        logger.info(f"[Growth Constraint] Mid-large cap >$100B: capping growth at 35%")
-    elif market_cap > 10_000_000_000:  # >$10B
-        max_sustainable_growth = 0.50  # 50% max
-        logger.info(f"[Growth Constraint] Mid-cap >$10B: capping growth at 50%")
-    else:  # <$10B (small caps, growth stage)
-        max_sustainable_growth = 1.0  # 100% max (allow high growth for small companies)
-        logger.info(f"[Growth Constraint] Small-cap <$10B: allowing up to 100% growth")
-    
-    # Apply constraint
-    stage1_growth = min(blended_growth, max_sustainable_growth)
-    
-    if blended_growth > max_sustainable_growth:
-        logger.warning(f"[Growth Constraint] Blended {blended_growth:.1%} capped at {max_sustainable_growth:.1%} due to market cap ${market_cap/1e9:.1f}B")
     
     logger.info(f"[Assumptions] Historical growth: {historical_growth:.1%}, "
                f"Analyst growth: {analyst_growth_3y:.1%}, "
@@ -1748,6 +1760,25 @@ def generate_3stage_assumptions(fundamentals: Dict[str, Any], custom: Dict[str, 
         # Margins
         'ebitda_margin_current': current_ebitda_margin,
         'ebitda_margin_target': margin_target,
+        
+        # 🔍 TRANSPARENCY: Explain adjustments made to raw data
+        'growth_adjustments': {
+            'raw_blended_growth': blended_growth,
+            'applied_stage1_growth': stage1_growth,
+            'constraint_applied': bool(blended_growth > 1.0),
+            'constraint_reason': f"Only sanity cap at 100% applied" if blended_growth > 1.0 else "No caps applied - see H-Model for growth decay handling",
+            'market_cap': market_cap,
+            'size_category': 'mega-cap' if market_cap > 3e12 else 'large-cap' if market_cap > 1e12 else 'mid-large' if market_cap > 500e9 else 'mid-cap' if market_cap > 10e9 else 'small-cap',
+            'note': 'High-growth companies use H-Model (natural decay) instead of 3-Stage (artificial caps)'
+        },
+        'margin_adjustments': {
+            'raw_current_margin': fundamentals.get('ebitda_margin', 0.20),
+            'adjusted_current_margin': current_ebitda_margin,
+            'target_margin': margin_target,
+            'mean_reversion_applied': bool(current_ebitda_margin > sector_target * 1.5 or (current_ebitda_margin > sector_target and current_ebitda_margin > 0)),
+            'sector': sector,
+            'sector_target': sector_target
+        },
         
         # CapEx & Working Capital
         'capex_percent_revenue': capex_pct,
