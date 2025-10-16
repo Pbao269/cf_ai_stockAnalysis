@@ -1,73 +1,122 @@
 /**
- * Multi-Model DCF Valuation Service - Cloudflare Worker
+ * Multi-Model DCF Valuation Service - Cloudflare Worker (Gateway)
  * 
- * Architecture:
- * 1. Fetch fundamentals from centralized data service
- * 2. Use AI (Cloudflare Workers AI) to select optimal DCF model(s)
- * 3. Run selected models in parallel (3-Stage, SOTP, H-Model)
- * 4. Aggregate results with weighted fair value
- * 5. Generate final recommendation
+ * This service acts as an intelligent gateway to the unified Python DCF service,
+ * handling API orchestration, error translation, and AI-powered analysis enrichment.
+ * 
+ * === ARCHITECTURE ===
+ * 1. Fetch fundamentals from Python unified DCF service (/fundamentals endpoint)
+ * 2. Request unified DCF calculation (/unified endpoint)
+ *    - Runs 3-Stage DCF (Goldman Sachs methodology)
+ *    - Runs H-Model DCF (Morningstar methodology)
+ *    - Applies sector-specific weighting and sanity caps
+ *    - Calculates confidence score based on 6 factors
+ * 3. Handle Financial Services rejection (DCF not appropriate)
+ * 4. Enrich with AI analysis (thesis, bull/bear cases, gap explanation)
+ * 5. Return comprehensive valuation package to frontend
+ * 
+ * === KEY FEATURES FROM PYTHON SERVICE ===
+ * ✅ Sector-Specific Weighting:
+ *    - Healthcare: 80% 3-Stage, 20% H-Model (H-Model overvalues)
+ *    - Small-cap (<$10B): 60% 3-Stage, 40% H-Model
+ *    - Tech high-growth (>30%): 70% H-Model, 30% 3-Stage
+ *    - Mega-cap (>$1T): 60% H-Model, 40% 3-Stage
+ *    - Mature (<10% growth): 60% 3-Stage, 40% H-Model
+ * 
+ * ✅ Sanity Caps:
+ *    - H-Model: Max 3x current price (5x if growth >50%)
+ *    - 3-Stage: Max 5x current price (10x if growth >100%)
+ *    - Healthcare H-Model: Capped at 2x 3-Stage if divergent
+ *    - Model spread >200%: Use 80/20 conservative weighting
+ * 
+ * ✅ Confidence Scoring (0.0-1.0):
+ *    - Model divergence (most important)
+ *    - FCF quality (negative FCF reduces confidence)
+ *    - Growth extremes (>100% growth adds uncertainty)
+ *    - Market cap & liquidity (micro-cap reduces confidence)
+ *    - Data quality (negative EBITDA reduces confidence)
+ *    - Sector appropriateness (Financials rejected, Healthcare penalized)
+ * 
+ * ✅ Financial Services Handling:
+ *    - DCF is inappropriate for banks, insurance, financial companies
+ *    - Returns 400 error with recommendation to use P/E, P/B multiples
+ *    - AI will be guided to use alternative valuation methods
+ * 
+ * === AI INTEGRATION ===
+ * The AI receives:
+ * 1. Confidence score and level (HIGH/MEDIUM/LOW)
+ * 2. Confidence factors (why confidence is high/low)
+ * 3. Weighting rationale (why models weighted this way)
+ * 4. Original vs capped fair values (transparency)
+ * 5. All assumptions with transparency fields
+ * 
+ * This allows the AI to:
+ * - Explain uncertainty to users ("LOW confidence due to negative FCF")
+ * - Justify model selection ("H-Model favored for high-growth tech")
+ * - Present ranges for uncertain valuations
+ * - Recommend alternative methods when appropriate
+ * 
+ * === RESPONSE STRUCTURE ===
+ * {
+ *   success: true,
+ *   data: {
+ *     ticker: "NVDA",
+ *     current_price: 179.83,
+ *     individual_valuations: [
+ *       {
+ *         model: "3stage",
+ *         price_per_share: 205.36,
+ *         price_per_share_original: 205.36,  // Before caps
+ *         sanity_cap_applied: "...",  // If capped
+ *         assumptions: { ... }
+ *       },
+ *       { ... H-Model ... }
+ *     ],
+ *     consensus_valuation: {
+ *       weighted_fair_value: 191.05,
+ *       confidence_score: 0.85,
+ *       confidence_level: "MEDIUM",
+ *       confidence_factors: {
+ *         factors: [
+ *           { factor: "model_convergence", impact: +0.10, description: "..." },
+ *           { factor: "high_growth", impact: -0.15, description: "..." }
+ *         ]
+ *       },
+ *       weighting_method: {
+ *         rationale: "Tech high-growth (69.3%): H-Model 70%, 3-Stage 30%",
+ *         hmodel_weight: 0.70,
+ *         stage3_weight: 0.30
+ *       }
+ *     },
+ *     recommendation: "BUY",
+ *     ai_analysis: { ... }
+ *   }
+ * }
+ * 
+ * === ERROR HANDLING ===
+ * Financial Services (e.g., JPM):
+ * {
+ *   success: false,
+ *   error: "DCF not appropriate for financial companies (Financial Services)...",
+ *   recommendation: "Use P/E, P/B, or P/TBV multiples for financial companies",
+ *   alternative_methods: ["price_to_earnings", "price_to_book", "dividend_discount_model"]
+ * }
  */
 
 // import { validateDcfOutput, type DcfOutputType } from '../shared/schemas/dcf';
 
-// Cloudflare Workers types
-interface KVNamespace {
-  get(key: string, type?: 'text'): Promise<string | null>;
-  get(key: string, type: 'json'): Promise<any | null>;
-  put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
-}
-
-// Use proper Cloudflare Workers AI type
-// The Ai interface is provided by Cloudflare Workers runtime
-
-export interface Env {
-  FUNDAMENTALS_SNAP: KVNamespace;
-  UNIFIED_DCF_URL?: string;    // Unified DCF service (data + 3-stage + h-model)
-  AI: Ai; // Reintroduced for gap explanation
-  AI_MODEL?: string;
-  // Note: SOTP is disabled (requires EDGAR segment data)
-}
-
-interface FundamentalsSnapshot {
-  ticker: string;
-  company_name: string;
-  sector: string;
-  industry: string;
-  revenue: number;
-  revenue_by_segment?: Array<{
-    segment_name: string;
-    revenue: number;
-    operating_income: number;
-    margin: number;
-  }>;
-  revenue_cagr_3y: number;
-  ebitda_margin: number;
-  market_cap: number;
-  current_price: number;
-  [key: string]: any;
-}
-
-interface ModelSelectorOutput {
-  recommended_models: ('3stage' | 'sotp' | 'hmodel')[];
-  reasoning: string;
-  confidence: number;
-  weights: {
-    '3stage'?: number;
-    'sotp'?: number;
-    'hmodel'?: number;
-  };
-}
-
-interface IndividualValuation {
-  model: string;
-  price_per_share: number;
-  enterprise_value: number;
-  upside_downside: number;
-  wacc: number;
-  assumptions?: any;
-  [key: string]: any;
-}
+// Import shared interfaces to keep this file focused on functional code
+// NOTE: Using relative import path compatible with wrangler bundler. If tsconfig rootDir is strict,
+// ensure this file is included in the worker's build scope (same directory).
+import type { 
+  Env, 
+  KVNamespace, 
+  FundamentalsSnapshot, 
+  ModelSelectorOutput, 
+  IndividualValuation, 
+  ConfidenceFactor, 
+  ConsensusValuation 
+} from './dcf';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -163,9 +212,10 @@ export default {
         });
       }
 
-      // Check cache first (keyed by assumptions signature)
+      // Check cache first (keyed by assumptions signature + AI signature)
       const assumpSig = body.assumptions ? btoa(JSON.stringify(body.assumptions)).slice(0, 32) : 'none';
-      const cacheKey = `unified-dcf:${ticker}:a=${assumpSig}`;
+      const aiSig = 'ai=1'; // Always include AI analysis in responses
+      const cacheKey = `unified-dcf:${ticker}:a=${assumpSig}:${aiSig}`;
       const cached = await env.FUNDAMENTALS_SNAP.get(cacheKey, 'json');
       
       if (cached && url.searchParams.get('fresh') !== 'true') {
@@ -216,12 +266,31 @@ export default {
       });
 
       if (!unifiedResponse.ok) {
-        throw new Error(`Unified DCF service error: ${unifiedResponse.statusText}`);
+        // Handle HTTP errors (including 500 from DCF rejection)
+        const errorData = await unifiedResponse.json().catch(() => ({ error: unifiedResponse.statusText })) as { error?: string };
+        
+        // Check if this is a Financial Services rejection
+        if (errorData?.error && errorData.error.includes('DCF not appropriate')) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: errorData.error,
+            recommendation: 'Use P/E, P/B, or P/TBV multiples for financial companies',
+            alternative_methods: ['price_to_earnings', 'price_to_book', 'dividend_discount_model'],
+            ticker,
+            sector: fundamentals.sector,
+            timestamp: new Date().toISOString()
+          }), {
+            status: 400, // Client error - inappropriate valuation method
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          });
+        }
+        
+        throw new Error(`Unified DCF service error: ${errorData?.error || unifiedResponse.statusText}`);
       }
 
-      const unifiedResult = await unifiedResponse.json() as { success: boolean; data: any };
+      const unifiedResult = await unifiedResponse.json() as { success: boolean; data: any; error?: string };
       if (!unifiedResult.success) {
-        throw new Error('Unified DCF service failed');
+        throw new Error(unifiedResult.error || 'Unified DCF service failed');
       }
 
       const unifiedData = unifiedResult.data;
@@ -235,6 +304,53 @@ export default {
       }
 
       // === STEP 3: Use Unified Results ===
+
+      // Helper: Build fallback AI analysis if AI binding unavailable or fails
+      const buildFallbackAIAnalysis = (
+        f: FundamentalsSnapshot,
+        cv: ConsensusValuation,
+        modelResults: Array<{ model: string; result: any }>,
+        analystAvgTarget: number,
+        analystCount: number
+      ) => {
+        const tickerSym = ticker;
+        const sectorName = f.sector || 'Unknown';
+        const confLevel = cv.confidence_level;
+        const confScorePct = Math.round((cv.confidence_score || 0) * 100);
+        const fv = cv.weighted_fair_value;
+        const cp = f.current_price;
+        const up = cp > 0 ? ((fv - cp) / cp) * 100 : 0;
+        const moat = (f as any).economic_moat || 'none';
+        const growthPct = Math.round(((f as any).revenue_cagr_3y || 0) * 100);
+        const fcfMarginPct = Math.round((((f as any).fcf_margin || 0) * 100) || 0);
+        const wm = cv.weighting_method?.rationale || 'Equal weighting across models';
+        const factors = (cv.confidence_factors?.factors || []) as any[];
+        const negatives = factors.filter((x: any) => (x.impact || 0) < 0).slice(0, 3);
+        const positives = factors.filter((x: any) => (x.impact || 0) > 0).slice(0, 3);
+
+        const thesis = `With ${confLevel} confidence (${confScorePct}%), our DCF estimates fair value at $${fv.toFixed(2)} (${up.toFixed(1)}% vs current $${cp.toFixed(2)}). ${tickerSym} operates in ${sectorName} with an economic moat of ${moat}. Weighting rationale: ${wm}.`;
+
+        const bullBullets: string[] = [];
+        if (positives.length) bullBullets.push(...positives.map((p: any) => `- ${p.description}`));
+        if (fcfMarginPct > 0) bullBullets.push(`- Strong cash generation (FCF margin ~${fcfMarginPct}%)`);
+        if (growthPct >= 10) bullBullets.push(`- Sustainable growth profile (~${growthPct}% 3Y CAGR)`);
+        if (analystAvgTarget && analystCount > 0 && analystAvgTarget > fv) bullBullets.push(`- Analyst targets above DCF ($${analystAvgTarget.toFixed(2)} from ${analystCount} analysts)`);
+        if (bullBullets.length === 0) bullBullets.push('- Solid fundamentals and market positioning');
+        const bull_scenario = bullBullets.join('\n');
+
+        const bearBullets: string[] = [];
+        if (negatives.length) bearBullets.push(...negatives.map((n: any) => `- ${n.description}`));
+        if (growthPct > 50) bearBullets.push('- Extreme recent growth may normalize faster than expected');
+        if (confLevel === 'LOW') bearBullets.push('- Model divergence indicates high uncertainty');
+        if (bearBullets.length === 0) bearBullets.push('- Macro/competition and execution risks could pressure assumptions');
+        const bear_scenario = bearBullets.join('\n');
+
+        const gap_explanation = analystCount > 0
+          ? `Analyst target is $${(analystAvgTarget || 0).toFixed(2)} vs DCF $${fv.toFixed(2)} and market $${cp.toFixed(2)}. Differences arise from model weighting (${wm}), cash flow quality, and confidence factors: ${factors.map((x: any) => x.factor).slice(0,3).join(', ')}.`
+          : `DCF fair value $${fv.toFixed(2)} vs market $${cp.toFixed(2)}. Key drivers: ${wm}. Confidence is ${confLevel.toLowerCase()} due to ${negatives.map((n: any) => n.factor).slice(0,2).join(', ') || 'model and data uncertainty'}.`;
+
+        return { thesis, bull_scenario, bear_scenario, gap_explanation };
+      };
       
       // Use the consensus valuation from the unified service
       const consensusValuation = unifiedData.consensus_valuation;
@@ -252,11 +368,16 @@ export default {
           model,
           model_name: result.model_name || (model === '3stage' ? '3-Stage DCF (Goldman Sachs)' : 'H-Model DCF (Morningstar)'),
           price_per_share: result.price_per_share,
+          // NEW: Track original value before caps
+          price_per_share_original: result.price_per_share_original,
           enterprise_value: result.enterprise_value,
           upside_downside: result.upside_downside,
           wacc: result.wacc,
           assumptions: result.assumptions,
-          projections: result.projections // Include projections for charting
+          projections: result.projections,
+          // NEW: Track applied caps for transparency
+          sanity_cap_applied: result.sanity_cap_applied,
+          healthcare_cap_applied: result.healthcare_cap_applied
         })),
         consensus_valuation: {
           weighted_fair_value: weightedFairValue,
@@ -266,6 +387,12 @@ export default {
             high: rangeHigh
           },
           upside_to_weighted: upsideToWeighted,
+          // NEW: Confidence scoring (critical for AI explanations)
+          confidence_score: consensusValuation.confidence_score,
+          confidence_level: consensusValuation.confidence_level,
+          confidence_factors: consensusValuation.confidence_factors,
+          // NEW: Weighting explanation (helps AI explain methodology)
+          weighting_method: consensusValuation.weighting_method,
           method: consensusValuation.method || 'Equal weight average of available models'
         },
         recommendation,
@@ -284,7 +411,7 @@ export default {
         };
       }
 
-      // === SIMPLIFIED AI ANALYSIS (Single Prompt) ===
+      // === AI ANALYSIS (Always On; await until done; fallback if fails/unavailable) ===
       let ai_analysis: {
         thesis?: string;
         bull_scenario?: string;
@@ -292,89 +419,38 @@ export default {
         gap_explanation?: string;
       } = {};
 
-      if (body.include_ai && env.AI) {
+      // Always attempt AI analysis when AI binding is available; otherwise fallback
+      if (env.AI) {
         try {
-          const model = env.AI_MODEL || '@cf/meta/llama-3.1-8b-instruct-fp8';
-          
-          // Single comprehensive prompt for all analysis
-          const analysisPrompt = `You are a Senior Equity Research Analyst. Analyze ${ticker} and provide a comprehensive investment analysis.
-
-FUNDAMENTAL DATA:
-- Current Price: $${fundamentals.current_price}
-- Revenue: $${fundamentals.revenue?.toLocaleString() || 'N/A'}
-- EBITDA Margin: ${(fundamentals.ebitda_margin * 100)?.toFixed(1) || 'N/A'}%
-- Free Cash Flow: $${fundamentals.free_cash_flow?.toLocaleString() || 'N/A'}
-- Beta: ${fundamentals.beta || 'N/A'}
-- Revenue Growth (3Y): ${(fundamentals.revenue_cagr_3y * 100)?.toFixed(1) || 'N/A'}%
-- Economic Moat: ${fundamentals.economic_moat || 'N/A'} (Score: ${fundamentals.moat_strength_score || 'N/A'}/100)
-- Analyst Target: $${analystAvgTarget || 'N/A'} (${analystCount} analysts)
-
-DCF VALUATION:
-- Weighted Fair Value: $${weightedFairValue?.toFixed(2) || 'N/A'}
-- 3-Stage DCF: $${modelResults.find((r: any) => r.model === '3stage')?.result?.price_per_share?.toFixed(2) || 'N/A'}
-- H-Model DCF: $${modelResults.find((r: any) => r.model === 'hmodel')?.result?.price_per_share?.toFixed(2) || 'N/A'}
-
-TASK: Provide a comprehensive investment analysis with the following structure:
-
-**THESIS** (2-3 sentences):
-Write the investment thesis focusing on the company's strategic position, business model, and growth story. Consider transformation narratives, competitive advantages, and market positioning beyond just financial metrics.
-
-**BULL CASE** (3-5 key drivers):
-- Growth drivers and competitive advantages
-- Strategic partnerships, contracts, or market opportunities  
-- Business model strengths and transformation milestones
-- Market tailwinds and positive catalysts
-
-**BEAR CASE** (3-5 key risks):
-- Business model risks and execution challenges
-- Market headwinds and competitive threats
-- Customer concentration, funding, or operational risks
-- Regulatory, macro, or industry-specific risks
-
-Focus on business narrative and strategic context, not just financial ratios. Be specific about the company's actual business model and strategic positioning.`;
-
-          // Execute single AI call for all analysis
-          const analysisRes = await (env.AI as any).run(model as any, { 
-            prompt: analysisPrompt, 
-            max_tokens: 1000 
-          });
-          
-          const analysisText = (analysisRes as any)?.response || '';
-          
-          // Parse the response into structured format
-          const thesisMatch = analysisText.match(/\*\*THESIS\*\*[:\s]*(.*?)(?=\*\*BULL CASE\*\*|$)/s);
-          const bullMatch = analysisText.match(/\*\*BULL CASE\*\*[:\s]*(.*?)(?=\*\*BEAR CASE\*\*|$)/s);
-          const bearMatch = analysisText.match(/\*\*BEAR CASE\*\*[:\s]*(.*?)$/s);
-          
-          ai_analysis.thesis = thesisMatch ? thesisMatch[1].trim() : undefined;
-          ai_analysis.bull_scenario = bullMatch ? bullMatch[1].trim() : undefined;
-          ai_analysis.bear_scenario = bearMatch ? bearMatch[1].trim() : undefined;
-          
-          // Keep gap explanation separate for now (can be simplified later)
-          const gapExplanationInput = {
+          ai_analysis = await generateAiAnalysis({
+            ai: env.AI,
+            model: env.AI_MODEL || '@cf/meta/llama-3.1-8b-instruct-fp8',
             ticker,
-            company_name: fundamentals.company_name,
-            sector: fundamentals.sector,
-            current_price: fundamentals.current_price,
-            analyst_avg_target: analystAvgTarget || fundamentals.current_price * 1.1,
-            dcf_weighted_fair_value: weightedFairValue,
-            three_stage: modelResults.find((r: any) => r.model === '3stage')?.result,
-            hmodel: modelResults.find((r: any) => r.model === 'hmodel')?.result,
-            fundamentals
-          };
-          
-          try {
-            const gapResult = await explainGapWithAI(env.AI, model, gapExplanationInput);
-            ai_analysis.gap_explanation = gapResult;
-          } catch (e) {
-            console.warn('[Gap Analysis] Failed:', e);
-            ai_analysis.gap_explanation = undefined;
-          }
+            fundamentals,
+            analystAvgTarget,
+            analystCount,
+            modelResults,
+            consensusValuation
+          });
 
         } catch (e) {
           console.warn('[Unified-DCF] AI analysis failed:', e);
-          ai_analysis = {};
+          ai_analysis = buildFallbackAIAnalysis(
+            fundamentals,
+            consensusValuation as any,
+            modelResults,
+            analystAvgTarget,
+            analystCount
+          );
         }
+      } else {
+        ai_analysis = buildFallbackAIAnalysis(
+          fundamentals,
+          consensusValuation as any,
+          modelResults,
+          analystAvgTarget,
+          analystCount
+        );
       }
 
       // Add AI analysis to final result
@@ -412,6 +488,101 @@ Focus on business narrative and strategic context, not just financial ratios. Be
  * Generate buy/sell recommendation from upside %
  */
 // (Removed unused generateRecommendation)
+
+// Generate full AI analysis (thesis, bull, bear, and gap) - awaited
+async function generateAiAnalysis(input: {
+  ai: Ai;
+  model: string;
+  ticker: string;
+  fundamentals: any;
+  analystAvgTarget: number;
+  analystCount: number;
+  modelResults: Array<{ model: string; result: any }>;
+  consensusValuation: ConsensusValuation;
+}): Promise<{ thesis?: string; bull_scenario?: string; bear_scenario?: string; gap_explanation?: string; }> {
+  const { ai, model, ticker, fundamentals, analystAvgTarget, analystCount, modelResults, consensusValuation } = input;
+
+  // Prepare context
+  const confidenceLevel = consensusValuation.confidence_level;
+  const confidenceScore = consensusValuation.confidence_score;
+  const confidenceFactorsText = consensusValuation.confidence_factors?.factors
+    ?.slice(0, 3)
+    ?.map((f: ConfidenceFactor) => `  • ${f.description}`)
+    ?.join('\n') || 'N/A';
+  const weightingRationale = consensusValuation.weighting_method?.rationale || 'Equal weighting';
+  const weightedFairValue = consensusValuation.weighted_fair_value;
+
+  const analysisPrompt = `You are a Senior Equity Research Analyst. Analyze ${ticker} and provide a comprehensive investment analysis.
+
+FUNDAMENTAL DATA:
+- Current Price: $${fundamentals.current_price}
+- Revenue: $${fundamentals.revenue?.toLocaleString() || 'N/A'}
+- EBITDA Margin: ${(fundamentals.ebitda_margin * 100)?.toFixed(1) || 'N/A'}%
+- Free Cash Flow: $${fundamentals.free_cash_flow?.toLocaleString() || 'N/A'}
+- Beta: ${fundamentals.beta || 'N/A'}
+- Revenue Growth (3Y): ${(fundamentals.revenue_cagr_3y * 100)?.toFixed(1) || 'N/A'}%
+- Economic Moat: ${fundamentals.economic_moat || 'N/A'} (Score: ${fundamentals.moat_strength_score || 'N/A'}/100)
+- Analyst Target: $${analystAvgTarget || 'N/A'} (${analystCount} analysts)
+
+DCF VALUATION (${confidenceLevel} Confidence - ${(confidenceScore * 100).toFixed(0)}%):
+- Weighted Fair Value: $${weightedFairValue?.toFixed(2) || 'N/A'}
+- 3-Stage DCF: $${modelResults.find((r: any) => r.model === '3stage')?.result?.price_per_share?.toFixed(2) || 'N/A'}
+- H-Model DCF: $${modelResults.find((r: any) => r.model === 'hmodel')?.result?.price_per_share?.toFixed(2) || 'N/A'}
+- Model Weighting: ${weightingRationale}
+- Confidence Factors:
+${confidenceFactorsText}
+
+TASK: Provide a comprehensive investment analysis with the following structure:
+
+**THESIS** (2-3 sentences):
+Write the investment thesis focusing on the company's strategic position, business model, and growth story. Consider transformation narratives, competitive advantages, and market positioning beyond just financial metrics.
+
+**BULL CASE** (3-5 key drivers):
+- Growth drivers and competitive advantages
+- Strategic partnerships, contracts, or market opportunities  
+- Business model strengths and transformation milestones
+- Market tailwinds and positive catalysts
+
+**BEAR CASE** (3-5 key risks):
+- Business model risks and execution challenges
+- Market headwinds and competitive threats
+- Customer concentration, funding, or operational risks
+- Regulatory, macro, or industry-specific risks
+
+Focus on business narrative and strategic context, not just financial ratios. Be specific about the company's actual business model and strategic positioning.`;
+
+  const analysisRes = await (ai as any).run(model as any, { prompt: analysisPrompt, max_tokens: 1000 });
+  const text = (analysisRes as any)?.response || (analysisRes as any)?.result || (analysisRes as any)?.output_text || '';
+
+  const thesisMatch = text.match(/\*\*THESIS\*\*[:\s]*(.*?)(?=\*\*BULL CASE\*\*|$)/s);
+  const bullMatch = text.match(/\*\*BULL CASE\*\*[:\s]*(.*?)(?=\*\*BEAR CASE\*\*|$)/s);
+  const bearMatch = text.match(/\*\*BEAR CASE\*\*[:\s]*(.*?)$/s);
+
+  const result: { thesis?: string; bull_scenario?: string; bear_scenario?: string; gap_explanation?: string } = {
+    thesis: thesisMatch ? thesisMatch[1].trim() : undefined,
+    bull_scenario: bullMatch ? bullMatch[1].trim() : undefined,
+    bear_scenario: bearMatch ? bearMatch[1].trim() : undefined
+  };
+
+  // Gap explanation (second awaited call)
+  const gapExplanationInput = {
+    ticker,
+    company_name: fundamentals.company_name,
+    sector: fundamentals.sector,
+    current_price: fundamentals.current_price,
+    analyst_avg_target: analystAvgTarget || fundamentals.current_price * 1.1,
+    dcf_weighted_fair_value: weightedFairValue,
+    three_stage: modelResults.find((r: any) => r.model === '3stage')?.result,
+    hmodel: modelResults.find((r: any) => r.model === 'hmodel')?.result,
+    fundamentals
+  };
+  try {
+    const gap = await explainGapWithAI(ai, model, gapExplanationInput);
+    if (gap) result.gap_explanation = gap;
+  } catch {}
+
+  return result;
+}
 
 // High-quality, company-tailored gap explanation prompt
 async function explainGapWithAI(ai: Ai, model: string, input: {

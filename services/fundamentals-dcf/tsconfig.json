@@ -5,6 +5,7 @@
   },
   "include": [
     "src/**/*",
+    "./*.ts",
     "worker-configuration.d.ts",
     "../shared/schemas/**/*.ts"
   ],
