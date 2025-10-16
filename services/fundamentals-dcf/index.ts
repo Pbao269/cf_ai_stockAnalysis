@@ -159,13 +159,38 @@ export default {
           });
         }
         
-        const res = await (env.AI as any).run((env.AI_MODEL || '@cf/meta/llama-3.1-8b-instruct-fp8') as any, {
-          prompt: 'Say hello in one word.'
-        });
+        // Test with both formats
+        const modelName = env.AI_MODEL || '@cf/meta/llama-3.1-8b-instruct-fp8';
+        
+        // Try messages format first (recommended)
+        let messagesResult;
+        try {
+          const messagesRes = await (env.AI as any).run(modelName as any, {
+            messages: [
+              { role: 'user', content: 'Say hello in one word.' }
+            ]
+          });
+          messagesResult = (messagesRes as any)?.response || (messagesRes as any)?.result || 'No response';
+        } catch (msgError) {
+          messagesResult = `Messages format error: ${msgError instanceof Error ? msgError.message : 'Unknown'}`;
+        }
+        
+        // Try prompt format
+        let promptResult;
+        try {
+          const promptRes = await (env.AI as any).run(modelName as any, {
+            prompt: 'Say hello in one word.'
+          });
+          promptResult = (promptRes as any)?.response || (promptRes as any)?.result || 'No response';
+        } catch (promptError) {
+          promptResult = `Prompt format error: ${promptError instanceof Error ? promptError.message : 'Unknown'}`;
+        }
         
         return new Response(JSON.stringify({ 
-          ai_response: (res as any)?.response || 'No response',
-          ai_available: true 
+          ai_available: true,
+          model: modelName,
+          messages_format: messagesResult,
+          prompt_format: promptResult
         }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         });
@@ -512,7 +537,9 @@ async function generateAiAnalysis(input: {
   const weightingRationale = consensusValuation.weighting_method?.rationale || 'Equal weighting';
   const weightedFairValue = consensusValuation.weighted_fair_value;
 
-  const analysisPrompt = `You are a Senior Equity Research Analyst. Analyze ${ticker} and provide a comprehensive investment analysis.
+  const systemPrompt = `You are a Senior Equity Research Analyst. Provide comprehensive investment analysis with clear structure using **THESIS**, **BULL CASE**, and **BEAR CASE** headers.`;
+  
+  const userPrompt = `Analyze ${ticker} and provide investment analysis.
 
 FUNDAMENTAL DATA:
 - Current Price: $${fundamentals.current_price}
@@ -551,8 +578,73 @@ Write the investment thesis focusing on the company's strategic position, busine
 
 Focus on business narrative and strategic context, not just financial ratios. Be specific about the company's actual business model and strategic positioning.`;
 
-  const analysisRes = await (ai as any).run(model as any, { prompt: analysisPrompt, max_tokens: 1000 });
+  // Use scoped prompts (recommended by Cloudflare) with messages format
+  const analysisRes = await (ai as any).run(model as any, { 
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt }
+    ],
+    max_tokens: 1000 
+  });
+  
+  console.log('[AI Analysis] Raw response:', JSON.stringify(analysisRes).substring(0, 200));
   const text = (analysisRes as any)?.response || (analysisRes as any)?.result || (analysisRes as any)?.output_text || '';
+  console.log('[AI Analysis] Extracted text length:', text.length);
+
+  // Check if we got empty response
+  if (!text || text.length < 10) {
+    console.error('[AI Analysis] Empty or very short response received, text:', text);
+    console.error('[AI Analysis] Trying fallback with prompt format...');
+    
+    // Try fallback with unscoped prompt format
+    try {
+      const fallbackRes = await (ai as any).run(model as any, { 
+        prompt: `${systemPrompt}\n\n${userPrompt}`,
+        max_tokens: 1000 
+      });
+      const fallbackText = (fallbackRes as any)?.response || (fallbackRes as any)?.result || (fallbackRes as any)?.output_text || '';
+      console.log('[AI Analysis] Fallback response length:', fallbackText.length);
+      
+      if (fallbackText && fallbackText.length > 10) {
+        // Use fallback text
+        const thesisMatch = fallbackText.match(/\*\*THESIS\*\*[:\s]*(.*?)(?=\*\*BULL CASE\*\*|$)/s);
+        const bullMatch = fallbackText.match(/\*\*BULL CASE\*\*[:\s]*(.*?)(?=\*\*BEAR CASE\*\*|$)/s);
+        const bearMatch = fallbackText.match(/\*\*BEAR CASE\*\*[:\s]*(.*?)$/s);
+        
+        const result: { thesis?: string; bull_scenario?: string; bear_scenario?: string; gap_explanation?: string } = {
+          thesis: thesisMatch ? thesisMatch[1].trim() : undefined,
+          bull_scenario: bullMatch ? bullMatch[1].trim() : undefined,
+          bear_scenario: bearMatch ? bearMatch[1].trim() : undefined
+        };
+        
+        // Gap explanation (second awaited call)
+        const gapExplanationInput = {
+          ticker,
+          company_name: fundamentals.company_name,
+          sector: fundamentals.sector,
+          current_price: fundamentals.current_price,
+          analyst_avg_target: analystAvgTarget || fundamentals.current_price * 1.1,
+          dcf_weighted_fair_value: weightedFairValue,
+          three_stage: modelResults.find((r: any) => r.model === '3stage')?.result,
+          hmodel: modelResults.find((r: any) => r.model === 'hmodel')?.result,
+          fundamentals
+        };
+        try {
+          const gap = await explainGapWithAI(ai, model, gapExplanationInput);
+          if (gap && gap !== 'AI analysis unavailable') result.gap_explanation = gap;
+        } catch (gapError) {
+          console.error('[Gap Analysis] Error:', gapError);
+        }
+        
+        return result;
+      }
+    } catch (fallbackError) {
+      console.error('[AI Analysis] Fallback failed:', fallbackError);
+    }
+    
+    // If we still don't have text, throw error to trigger fallback generation
+    throw new Error('AI response empty after fallback attempts');
+  }
 
   const thesisMatch = text.match(/\*\*THESIS\*\*[:\s]*(.*?)(?=\*\*BULL CASE\*\*|$)/s);
   const bullMatch = text.match(/\*\*BULL CASE\*\*[:\s]*(.*?)(?=\*\*BEAR CASE\*\*|$)/s);
@@ -563,6 +655,12 @@ Focus on business narrative and strategic context, not just financial ratios. Be
     bull_scenario: bullMatch ? bullMatch[1].trim() : undefined,
     bear_scenario: bearMatch ? bearMatch[1].trim() : undefined
   };
+  
+  console.log('[AI Analysis] Parsed sections:', {
+    hasThesis: !!result.thesis,
+    hasBull: !!result.bull_scenario,
+    hasBear: !!result.bear_scenario
+  });
 
   // Gap explanation (second awaited call)
   const gapExplanationInput = {
@@ -578,8 +676,13 @@ Focus on business narrative and strategic context, not just financial ratios. Be
   };
   try {
     const gap = await explainGapWithAI(ai, model, gapExplanationInput);
-    if (gap) result.gap_explanation = gap;
-  } catch {}
+    if (gap && gap !== 'AI analysis unavailable') {
+      result.gap_explanation = gap;
+      console.log('[AI Analysis] Gap explanation added, length:', gap.length);
+    }
+  } catch (gapError) {
+    console.error('[Gap Analysis] Error:', gapError);
+  }
 
   return result;
 }
@@ -616,30 +719,85 @@ async function explainGapWithAI(ai: Ai, model: string, input: {
     hmodel?.assumptions?.g_low || 0
   );
 
-  const prompt = `Analyze the valuation gap for ${ticker} (${company_name || 'Unknown Company'}) in the ${sector || 'equity'} sector.
+  // Calculate gaps explicitly for the prompt
+  const dcfVsMarket = dcf_weighted_fair_value - current_price;
+  const dcfVsMarketPct = (dcfVsMarket / current_price) * 100;
+  const analystVsMarket = analyst_avg_target - current_price;
+  const analystVsMarketPct = (analystVsMarket / current_price) * 100;
+  const dcfVsAnalyst = dcf_weighted_fair_value - analyst_avg_target;
+  const dcfVsAnalystPct = Math.abs(analyst_avg_target) > 0 ? (dcfVsAnalyst / analyst_avg_target) * 100 : 0;
 
-CURRENT VALUATION:
-• Market Price: $${current_price.toFixed(2)}
-• Analyst Target: $${analyst_avg_target.toFixed(2)} (${analystCount} analysts)
-• DCF Fair Value: $${dcf_weighted_fair_value.toFixed(2)}
-
-DCF MODELS:
-• 3-Stage DCF: $${threeStagePrice.toFixed(2)} (WACC: ${(threeStageWacc * 100).toFixed(1)}%)
-• H-Model DCF: $${hmodelPrice.toFixed(2)} (WACC: ${(hmodelWacc * 100).toFixed(1)}%)
-
-KEY METRICS:
-• Revenue Growth: ${histGrowth}% (3Y) vs ${analystGrowth}% (expected)
-• EBITDA Margin: ${ebitdaMargin}%
-• Economic Moat: ${moat} (${moatScore}/100)
-
-Provide a 3-4 sentence analysis explaining the valuation discrepancy. Focus on business model factors, growth assumptions, and market positioning that could explain the gap between market price, analyst targets, and DCF models.`;
-
-  const res = await (ai as any).run(model as any, {
-    prompt: prompt,
-    max_tokens: 200  // Increased for more detailed analysis
-  });
+  const systemPrompt = `You are a Senior Equity Research Analyst. Explain valuation gaps concisely, focusing on the DCF weighted consensus fair value compared to market price and analyst consensus.`;
   
-  // Return raw response - no parsing, no JSON processing
-  return (res as any)?.response || 'AI analysis unavailable';
+  const userPrompt = `Explain the valuation gap for ${ticker} (${company_name || 'Unknown Company'}) in ${sector || 'equity'} sector.
+
+CRITICAL FOCUS: Explain why there are differences between these THREE key valuations:
+1. Market Price: $${current_price.toFixed(2)} (what investors are paying NOW)
+2. Analyst Consensus: $${analyst_avg_target.toFixed(2)} (${analystCount} analysts' average target)
+3. DCF Weighted Fair Value: $${dcf_weighted_fair_value.toFixed(2)} (our fundamental valuation combining 3-Stage and H-Model)
+
+VALUATION GAPS TO EXPLAIN:
+• DCF vs Market: ${dcfVsMarket >= 0 ? '+' : ''}$${dcfVsMarket.toFixed(2)} (${dcfVsMarketPct >= 0 ? '+' : ''}${dcfVsMarketPct.toFixed(1)}%)
+• Analyst vs Market: ${analystVsMarket >= 0 ? '+' : ''}$${analystVsMarket.toFixed(2)} (${analystVsMarketPct >= 0 ? '+' : ''}${analystVsMarketPct.toFixed(1)}%)
+• DCF vs Analyst: ${dcfVsAnalyst >= 0 ? '+' : ''}$${dcfVsAnalyst.toFixed(2)} (${dcfVsAnalystPct >= 0 ? '+' : ''}${dcfVsAnalystPct.toFixed(1)}%)
+
+CONTEXT (for reference only):
+• 3-Stage DCF: $${threeStagePrice.toFixed(2)} | H-Model DCF: $${hmodelPrice.toFixed(2)}
+• Revenue Growth: ${histGrowth}% (historical) vs ${analystGrowth}% (expected)
+• EBITDA Margin: ${ebitdaMargin}% | FCF Margin: ${fcfMargin}%
+• Economic Moat: ${moat} (strength: ${moatScore}/100)
+
+TASK: Write 3-4 sentences explaining:
+1. Why DCF weighted consensus (${dcf_weighted_fair_value.toFixed(2)}) differs from market price (${current_price.toFixed(2)})
+2. Why DCF differs from analyst consensus (${analyst_avg_target.toFixed(2)})
+3. What business/market factors drive these gaps (growth assumptions, risk perception, market sentiment, moat quality, etc.)
+
+Focus on the WEIGHTED CONSENSUS DCF value, not individual model differences.`;
+
+  // Use scoped prompts (recommended by Cloudflare) with messages format
+  try {
+    const res = await (ai as any).run(model as any, {
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      max_tokens: 250  // Increased for more detailed analysis
+    });
+    
+    console.log('[Gap Analysis] Raw response:', JSON.stringify(res).substring(0, 200));
+    
+    // Return raw response - no parsing, no JSON processing
+    const gapText = (res as any)?.response || (res as any)?.result || (res as any)?.output_text || '';
+    console.log('[Gap Analysis] Extracted text length:', gapText.length);
+    
+    // If we got a valid response, return it
+    if (gapText && gapText.length > 10) {
+      return gapText;
+    }
+    
+    // Otherwise, try fallback with unscoped prompt
+    console.error('[Gap Analysis] Empty response with messages format, trying fallback...');
+  } catch (error) {
+    console.error('[Gap Analysis] Error with messages format:', error);
+  }
+  
+  // Fallback: Try unscoped prompt format
+  try {
+    const fallbackRes = await (ai as any).run(model as any, {
+      prompt: `${systemPrompt}\n\n${userPrompt}`,
+      max_tokens: 250
+    });
+    
+    const fallbackText = (fallbackRes as any)?.response || (fallbackRes as any)?.result || (fallbackRes as any)?.output_text || '';
+    console.log('[Gap Analysis] Fallback response length:', fallbackText.length);
+    
+    if (fallbackText && fallbackText.length > 10) {
+      return fallbackText;
+    }
+  } catch (fallbackError) {
+    console.error('[Gap Analysis] Fallback failed:', fallbackError);
+  }
+  
+  return 'AI analysis unavailable';
 }
 
