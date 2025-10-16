@@ -428,6 +428,14 @@ def run_unified_dcf():
         current_price = fundamentals['current_price']
         upside_to_weighted = ((weighted_fair_value - current_price) / current_price) * 100
         
+        # CALCULATE CONFIDENCE SCORE
+        confidence_score, confidence_factors = calculate_confidence_score(
+            fundamentals=fundamentals,
+            results=results,
+            spread_pct=spread_pct if len(results) == 2 else 0,
+            current_price=current_price
+        )
+        
         # Generate recommendation
         recommendation = generate_recommendation(upside_to_weighted)
         
@@ -474,10 +482,19 @@ def run_unified_dcf():
                     'high': range_high
                 },
                 'upside_to_weighted': upside_to_weighted,
+                'confidence_score': confidence_score,
+                'confidence_level': (
+                    'HIGH' if confidence_score > 0.85 else
+                    'MEDIUM' if confidence_score > 0.65 else
+                    'LOW'
+                ),
+                'confidence_factors': confidence_factors,
                 'weighting_method': {
                     'description': 'Intelligent weighting based on company profile',
                     'rationale': (
-                        f"High-growth ({revenue_growth:.1%}): H-Model 70%, 3-Stage 30% (natural decay better)" if revenue_growth > 0.30 else
+                        f"Healthcare: H-Model 20%, 3-Stage 80% (H-Model overvalues stable healthcare)" if 'Healthcare' in sector or 'Health Care' in sector else
+                        f"Small-cap (${market_cap/1e9:.1f}B): H-Model 40%, 3-Stage 60% (H-Model conservative with negative FCF)" if market_cap < 10e9 else
+                        f"Tech high-growth ({revenue_growth:.1%}): H-Model 70%, 3-Stage 30% (natural decay better)" if 'Technology' in sector and revenue_growth > 0.30 else
                         f"Mega-cap (${market_cap/1e12:.1f}T): H-Model 60%, 3-Stage 40% (avoids size-cap distortion)" if market_cap > 1e12 else
                         f"Mature ({revenue_growth:.1%}): H-Model 40%, 3-Stage 60% (explicit stages better)" if revenue_growth < 0.10 else
                         "Mid-growth: Equal 50/50 weighting"
@@ -1943,14 +1960,46 @@ def calculate_hmodel(fundamentals: Dict[str, Any], assumptions: Dict[str, Any]) 
     # Extract fundamentals
     fcf_current = fundamentals['free_cash_flow']
     
-    # HANDLE NEGATIVE FCF: Use alternative valuation approach
+    # HANDLE NEGATIVE FCF: Use sector-specific revenue-based proxy
     if fcf_current <= 0:
-        logger.warning(f"[H-Model] Negative FCF ${fcf_current/1e6:.1f}M detected - using revenue-based proxy")
-        # Use revenue * target FCF margin as proxy
+        logger.warning(f"[H-Model] Negative FCF ${fcf_current/1e6:.1f}M detected - using sector-specific proxy")
+        
         revenue = fundamentals['revenue']
-        target_fcf_margin = 0.10  # Conservative 10% target
+        sector = fundamentals.get('sector', '')
+        market_cap = fundamentals.get('market_cap', 0)
+        
+        # SECTOR-SPECIFIC FCF TARGETS (Based on industry norms)
+        fcf_targets = {
+            'Technology': 0.20,           # 20% - High margin software/services
+            'Communication Services': 0.18,  # 18% - Media, telecom
+            'Healthcare': 0.15,           # 15% - Pharmaceuticals, biotech
+            'Consumer Cyclical': 0.12,    # 12% - Retail, automotive
+            'Consumer Defensive': 0.10,   # 10% - Food, beverage
+            'Industrials': 0.08,          # 8% - Manufacturing, heavy equipment
+            'Basic Materials': 0.08,      # 8% - Mining, chemicals
+            'Energy': 0.12,               # 12% - Oil, gas (cyclical)
+            'Utilities': 0.15,            # 15% - Stable, regulated
+            'Real Estate': 0.10,          # 10% - REITs, property
+            'Financial Services': 0.15,   # 15% - Banks, insurance
+        }
+        
+        # Get sector-specific target (default 10%)
+        target_fcf_margin = fcf_targets.get(sector, 0.10)
+        
+        # ADJUST BY COMPANY STAGE/SIZE
+        if market_cap < 5_000_000_000:  # <$5B (small-cap growth)
+            target_fcf_margin *= 1.3  # 30% higher for high-growth potential
+            logger.info(f"[H-Model FCF Proxy] Small-cap adjustment: +30%")
+        elif market_cap < 50_000_000_000:  # <$50B (mid-cap)
+            target_fcf_margin *= 1.15  # 15% higher for growth
+            logger.info(f"[H-Model FCF Proxy] Mid-cap adjustment: +15%")
+        
+        # Calculate proxy FCF
         fcf_current = revenue * target_fcf_margin
-        logger.info(f"[H-Model] Using proxy FCF: ${fcf_current/1e6:.1f}M (Revenue ${revenue/1e6:.1f}M × {target_fcf_margin:.0%})")
+        
+        logger.info(f"[H-Model FCF Proxy] Sector: {sector}")
+        logger.info(f"[H-Model FCF Proxy] Target margin: {target_fcf_margin:.1%} of revenue")
+        logger.info(f"[H-Model FCF Proxy] Proxy FCF: ${fcf_current/1e6:.1f}M (Revenue ${revenue/1e6:.1f}M × {target_fcf_margin:.1%})")
     
     current_price = fundamentals['current_price']
     shares_outstanding = fundamentals['shares_outstanding']
@@ -2214,6 +2263,170 @@ def maybe_calculate_dynamic_wacc(base_wacc: float, assumptions: Dict[str, Any],
     adjustment = (leverage - 0.30) * 0.01  # 1% per 100% change in leverage
     adjusted = max(0.0, base_wacc + adjustment)
     return adjusted
+
+
+def calculate_confidence_score(fundamentals: Dict[str, Any], results: list, 
+                               spread_pct: float, current_price: float) -> tuple:
+    """
+    Calculate confidence score (0.0-1.0) based on multiple factors
+    
+    Returns: (confidence_score, confidence_factors_dict)
+    """
+    confidence_score = 1.0
+    factors = []
+    
+    # FACTOR 1: Model Divergence (most important)
+    if len(results) >= 2:
+        if spread_pct > 2.0:  # >200% spread
+            confidence_score *= 0.50  # Very low confidence
+            factors.append({
+                'factor': 'model_divergence',
+                'impact': -0.50,
+                'description': f'Extreme model spread ({spread_pct*100:.0f}%) indicates high uncertainty'
+            })
+        elif spread_pct > 1.0:  # >100% spread
+            confidence_score *= 0.65
+            factors.append({
+                'factor': 'model_divergence',
+                'impact': -0.35,
+                'description': f'High model spread ({spread_pct*100:.0f}%) reduces confidence'
+            })
+        elif spread_pct > 0.5:  # >50% spread
+            confidence_score *= 0.80
+            factors.append({
+                'factor': 'model_divergence',
+                'impact': -0.20,
+                'description': f'Moderate model spread ({spread_pct*100:.0f}%)'
+            })
+        elif spread_pct < 0.20:  # <20% spread
+            factors.append({
+                'factor': 'model_convergence',
+                'impact': +0.10,
+                'description': f'Models agree closely ({spread_pct*100:.0f}% spread) - high confidence'
+            })
+    
+    # FACTOR 2: FCF Quality
+    fcf = fundamentals.get('free_cash_flow', 0)
+    revenue = fundamentals.get('revenue', 1)
+    fcf_margin = fcf / revenue if revenue > 0 else 0
+    
+    if fcf <= 0:
+        confidence_score *= 0.70
+        factors.append({
+            'factor': 'negative_fcf',
+            'impact': -0.30,
+            'description': f'Negative FCF (${fcf/1e6:.0f}M) requires proxy - less reliable'
+        })
+    elif fcf_margin < 0.05:  # <5% FCF margin
+        confidence_score *= 0.85
+        factors.append({
+            'factor': 'low_fcf_margin',
+            'impact': -0.15,
+            'description': f'Low FCF margin ({fcf_margin*100:.1f}%) reduces reliability'
+        })
+    elif fcf_margin > 0.20:  # >20% FCF margin
+        factors.append({
+            'factor': 'strong_fcf',
+            'impact': +0.10,
+            'description': f'Strong FCF margin ({fcf_margin*100:.1f}%) increases confidence'
+        })
+    
+    # FACTOR 3: Growth Extremes
+    revenue_growth = fundamentals.get('revenue_cagr_3y', 0)
+    
+    if abs(revenue_growth) > 1.0:  # >100% growth or decline
+        confidence_score *= 0.75
+        factors.append({
+            'factor': 'extreme_growth',
+            'impact': -0.25,
+            'description': f'Extreme growth ({revenue_growth*100:.0f}%) is hard to predict'
+        })
+    elif abs(revenue_growth) > 0.50:  # >50% growth
+        confidence_score *= 0.85
+        factors.append({
+            'factor': 'high_growth',
+            'impact': -0.15,
+            'description': f'High growth ({revenue_growth*100:.0f}%) adds uncertainty'
+        })
+    elif 0.05 < revenue_growth < 0.20:  # Stable 5-20% growth
+        factors.append({
+            'factor': 'stable_growth',
+            'impact': +0.05,
+            'description': f'Stable growth ({revenue_growth*100:.0f}%) is predictable'
+        })
+    
+    # FACTOR 4: Market Cap & Liquidity
+    market_cap = fundamentals.get('market_cap', 0)
+    
+    if market_cap < 1_000_000_000:  # <$1B (micro-cap)
+        confidence_score *= 0.75
+        factors.append({
+            'factor': 'micro_cap',
+            'impact': -0.25,
+            'description': f'Micro-cap (${market_cap/1e9:.2f}B) - high volatility'
+        })
+    elif market_cap < 10_000_000_000:  # <$10B (small-cap)
+        confidence_score *= 0.90
+        factors.append({
+            'factor': 'small_cap',
+            'impact': -0.10,
+            'description': f'Small-cap (${market_cap/1e9:.1f}B) - some uncertainty'
+        })
+    elif market_cap > 1_000_000_000_000:  # >$1T (mega-cap)
+        factors.append({
+            'factor': 'mega_cap',
+            'impact': +0.05,
+            'description': f'Mega-cap (${market_cap/1e12:.1f}T) - more predictable'
+        })
+    
+    # FACTOR 5: Data Quality
+    ebitda_margin = fundamentals.get('ebitda_margin', 0)
+    
+    if ebitda_margin <= 0:
+        confidence_score *= 0.80
+        factors.append({
+            'factor': 'negative_ebitda',
+            'impact': -0.20,
+            'description': 'Negative EBITDA margin reduces reliability'
+        })
+    
+    # FACTOR 6: Sector-Specific Adjustments
+    sector = fundamentals.get('sector', '')
+    
+    if 'Financial' in sector:
+        confidence_score *= 0.60
+        factors.append({
+            'factor': 'financial_sector',
+            'impact': -0.40,
+            'description': 'Financial companies not ideal for DCF'
+        })
+    elif 'Healthcare' in sector or 'Health Care' in sector:
+        confidence_score *= 0.85
+        factors.append({
+            'factor': 'healthcare_sector',
+            'impact': -0.15,
+            'description': 'Healthcare DCF subject to regulatory uncertainty'
+        })
+    elif 'Technology' in sector:
+        factors.append({
+            'factor': 'technology_sector',
+            'impact': +0.05,
+            'description': 'Technology companies well-suited for DCF'
+        })
+    
+    # Cap confidence score between 0 and 1
+    confidence_score = max(0.0, min(1.0, confidence_score))
+    
+    return confidence_score, {
+        'score': confidence_score,
+        'level': 'HIGH' if confidence_score > 0.85 else 'MEDIUM' if confidence_score > 0.65 else 'LOW',
+        'factors': factors,
+        'interpretation': (
+            'High confidence - valuation is reliable' if confidence_score > 0.85 else
+            'Medium confidence - valuation has some uncertainty' if confidence_score > 0.65 else
+            'Low confidence - use valuation with caution'
+        )
+    }
 
 
 def generate_recommendation(upside: float) -> str:
