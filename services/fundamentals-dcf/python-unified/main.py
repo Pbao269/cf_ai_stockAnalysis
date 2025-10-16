@@ -275,39 +275,146 @@ def run_unified_dcf():
             raise Exception("Both DCF models failed")
         
         # Calculate consensus with intelligent weighting
-        # H-Model is better for high-growth companies (natural decay)
-        # 3-Stage is better for mature companies (explicit stages)
+        # SECTOR-SPECIFIC + GROWTH-BASED WEIGHTING (Professional Standard)
         
         market_cap = fundamentals.get('market_cap', 0)
         revenue_growth = fundamentals.get('revenue_cagr_3y', 0)
+        sector = fundamentals.get('sector', '')
+        industry = fundamentals.get('industry', '')
         
-        # Determine weights based on company profile
+        # CRITICAL: Check if DCF is appropriate for this sector
+        if 'Financial' in sector or 'Bank' in industry or 'Insurance' in industry:
+            logger.error(f"[DCF Validation] {sector}/{industry} not appropriate for DCF")
+            raise ValueError(
+                f"DCF not appropriate for financial companies ({sector}). "
+                "Recommendation: Use P/E, P/B, or P/TBV multiples instead."
+            )
+        
+        # Determine weights based on sector + company profile
         if len(results) == 2:
-            # High-growth companies: Favor H-Model (natural decay)
-            if revenue_growth > 0.30:  # >30% growth
+            # HEALTHCARE: H-Model overvalues stable healthcare companies
+            if 'Healthcare' in sector or 'Health Care' in sector:
+                if revenue_growth > 0.30:
+                    hmodel_weight = 0.20  # 20% H-Model (very conservative)
+                    logger.info(f"[Consensus] Healthcare high-growth: H-Model 20%, 3-Stage 80%")
+                else:
+                    hmodel_weight = 0.20  # 20% H-Model (H-Model problematic for healthcare)
+                    logger.info(f"[Consensus] Healthcare stable: H-Model 20%, 3-Stage 80%")
+            
+            # SMALL-CAP: H-Model too conservative with negative FCF
+            elif market_cap < 10_000_000_000:  # <$10B
+                hmodel_weight = 0.40  # 40% H-Model, 60% 3-Stage
+                logger.info(f"[Consensus] Small-cap ${market_cap/1e9:.1f}B: H-Model 40%, 3-Stage 60%")
+            
+            # TECHNOLOGY HIGH-GROWTH: Favor H-Model (natural decay)
+            elif 'Technology' in sector and revenue_growth > 0.30:
                 hmodel_weight = 0.70  # 70% H-Model, 30% 3-Stage
-                logger.info(f"[Consensus] High-growth company ({revenue_growth:.1%}): H-Model 70%, 3-Stage 30%")
-            # Mega-cap companies: Favor H-Model (avoids size-cap distortion)
+                logger.info(f"[Consensus] Tech high-growth ({revenue_growth:.1%}): H-Model 70%, 3-Stage 30%")
+            
+            # MEGA-CAP: Favor H-Model (avoids artificial caps)
             elif market_cap > 1_000_000_000_000:  # >$1T
                 hmodel_weight = 0.60  # 60% H-Model, 40% 3-Stage
                 logger.info(f"[Consensus] Mega-cap ${market_cap/1e12:.1f}T: H-Model 60%, 3-Stage 40%")
-            # Mature, stable companies: Favor 3-Stage (explicit planning)
+            
+            # MATURE, STABLE: Favor 3-Stage (explicit planning)
             elif revenue_growth < 0.10:  # <10% growth
                 hmodel_weight = 0.40  # 40% H-Model, 60% 3-Stage
                 logger.info(f"[Consensus] Mature company ({revenue_growth:.1%}): H-Model 40%, 3-Stage 60%")
-            # Mid-growth companies: Equal weight
+            
+            # DEFAULT: Equal weight
             else:
                 hmodel_weight = 0.50  # 50% H-Model, 50% 3-Stage
                 logger.info(f"[Consensus] Mid-growth company: Equal weighting 50/50")
             
-            # Apply weights
-            prices_weighted = []
-            for r in results:
-                weight = hmodel_weight if r['model'] == 'hmodel' else (1 - hmodel_weight)
-                prices_weighted.append(r['result']['price_per_share'] * weight)
+            # SANITY CAPS: Prevent unrealistic valuations
+            current_price = fundamentals['current_price']
+            capped_results = []
             
-            weighted_fair_value = sum(prices_weighted)
-            simple_average = sum([r['result']['price_per_share'] for r in results]) / len(results)
+            for r in results:
+                original_fv = r['result']['price_per_share']
+                capped_fv = original_fv
+                cap_applied = False
+                cap_reason = None
+                
+                if r['model'] == 'hmodel':
+                    # H-Model cap: Max 3x current price (unless high growth >50%)
+                    max_multiple = 3.0 if revenue_growth < 0.50 else 5.0
+                    if capped_fv > current_price * max_multiple:
+                        capped_fv = current_price * max_multiple
+                        cap_applied = True
+                        cap_reason = f"H-Model ${original_fv:.2f} capped at {max_multiple}x price (${capped_fv:.2f})"
+                        logger.warning(f"[Sanity Cap] {cap_reason}")
+                
+                elif r['model'] == '3stage':
+                    # 3-Stage cap: Max 5x current price (unless extreme growth >100%)
+                    max_multiple = 5.0 if revenue_growth < 1.0 else 10.0
+                    if capped_fv > current_price * max_multiple:
+                        capped_fv = current_price * max_multiple
+                        cap_applied = True
+                        cap_reason = f"3-Stage ${original_fv:.2f} capped at {max_multiple}x price (${capped_fv:.2f})"
+                        logger.warning(f"[Sanity Cap] {cap_reason}")
+                
+                # Store capped result
+                capped_results.append({
+                    'model': r['model'],
+                    'original_fv': original_fv,
+                    'capped_fv': capped_fv,
+                    'cap_applied': cap_applied,
+                    'cap_reason': cap_reason
+                })
+                
+                # Update the result with capped value
+                r['result']['price_per_share_original'] = original_fv
+                r['result']['price_per_share'] = capped_fv
+                if cap_applied:
+                    r['result']['sanity_cap_applied'] = cap_reason
+            
+            # HEALTHCARE SPECIFIC: Cap H-Model at 2x 3-Stage if divergence is extreme
+            if 'Healthcare' in sector or 'Health Care' in sector:
+                hmodel_result = next((r for r in results if r['model'] == 'hmodel'), None)
+                stage3_result = next((r for r in results if r['model'] == '3stage'), None)
+                
+                if hmodel_result and stage3_result:
+                    hmodel_fv = hmodel_result['result']['price_per_share']
+                    stage3_fv = stage3_result['result']['price_per_share']
+                    
+                    if hmodel_fv > stage3_fv * 2:
+                        original = hmodel_fv
+                        hmodel_result['result']['price_per_share'] = stage3_fv * 2
+                        logger.warning(f"[Healthcare Cap] H-Model ${original:.2f} capped at 2x 3-Stage (${stage3_fv * 2:.2f})")
+                        hmodel_result['result']['healthcare_cap_applied'] = f"Capped at 2x 3-Stage due to H-Model overvaluation"
+            
+            # MODEL SPREAD CHECK: If spread >200%, use conservative weighting
+            if len(results) == 2:
+                fv1 = results[0]['result']['price_per_share']
+                fv2 = results[1]['result']['price_per_share']
+                spread_pct = abs(fv1 - fv2) / current_price
+                
+                if spread_pct > 2.0:  # >200% spread
+                    logger.warning(f"[Model Divergence] Spread={spread_pct*100:.0f}% - using conservative weighting")
+                    # Use 80% conservative (lower value), 20% optimistic (higher value)
+                    conservative_fv = min(fv1, fv2)
+                    optimistic_fv = max(fv1, fv2)
+                    weighted_fair_value = conservative_fv * 0.80 + optimistic_fv * 0.20
+                    simple_average = (fv1 + fv2) / 2
+                else:
+                    # Normal weighting
+                    prices_weighted = []
+                    for r in results:
+                        weight = hmodel_weight if r['model'] == 'hmodel' else (1 - hmodel_weight)
+                        prices_weighted.append(r['result']['price_per_share'] * weight)
+                    
+                    weighted_fair_value = sum(prices_weighted)
+                    simple_average = sum([r['result']['price_per_share'] for r in results]) / len(results)
+            else:
+                # Only one model available
+                prices_weighted = []
+                for r in results:
+                    weight = hmodel_weight if r['model'] == 'hmodel' else (1 - hmodel_weight)
+                    prices_weighted.append(r['result']['price_per_share'] * weight)
+                
+                weighted_fair_value = sum(prices_weighted)
+                simple_average = sum([r['result']['price_per_share'] for r in results]) / len(results)
         else:
             # Fallback to simple average if only one model available
             prices = [r['result']['price_per_share'] for r in results]
