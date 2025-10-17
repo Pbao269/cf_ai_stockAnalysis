@@ -2,12 +2,11 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "outDir": "./dist",
-    "rootDir": "."
+    "rootDir": ".."
   },
   "include": [
-    "src/**/*",
-    "./*.ts",
-    "worker-configuration.d.ts",
+    "../fundamentals-dcf/*.ts",
+    "../fundamentals-dcf/worker-configuration.d.ts",
     "../shared/schemas/**/*.ts"
   ],
   "exclude": [

@@ -183,3 +183,61 @@ export const validateDcfOutputSafe = (data: unknown) => {
 export const validateDcfSensitivitiesSafe = (data: unknown) => {
   return DcfSensitivities.safeParse(data);
 };
+
+// ================= Unified wire-level schemas (Python → Worker) =================
+
+export const ConfidenceFactorSchema = z.strictObject({
+  factor: z.string(),
+  impact: z.number(),
+  description: z.string(),
+});
+export type ConfidenceFactor = z.infer<typeof ConfidenceFactorSchema>;
+
+export const UnifiedIndividualValuationSchema = z.strictObject({
+  model: z.string(),
+  model_name: z.string().optional(),
+  price_per_share: z.number(),
+  price_per_share_original: z.number().optional(),
+  enterprise_value: z.number().optional(),
+  upside_downside: z.number().optional(),
+  wacc: z.number().optional(),
+  assumptions: z.any().optional(),
+  projections: z.array(z.any()).optional(),
+  sanity_cap_applied: z.string().optional(),
+  healthcare_cap_applied: z.string().optional(),
+});
+
+export const UnifiedConsensusValuationSchema = z.strictObject({
+  weighted_fair_value: z.number(),
+  simple_average: z.number(),
+  range: z.strictObject({
+    low: z.number(),
+    high: z.number(),
+  }),
+  upside_to_weighted: z.number(),
+  confidence_score: z.number(),
+  confidence_level: z.enum(['HIGH', 'MEDIUM', 'LOW']),
+  confidence_factors: z.strictObject({
+    score: z.number(),
+    level: z.string(),
+    factors: z.array(ConfidenceFactorSchema),
+    interpretation: z.string(),
+  }),
+  weighting_method: z.strictObject({
+    description: z.string(),
+    rationale: z.string(),
+    hmodel_weight: z.number().nullable(),
+    stage3_weight: z.number().nullable(),
+  }),
+  method: z.string().optional(),
+});
+
+export const UnifiedDcfResponseSchema = z.object({
+  individual_valuations: z.array(UnifiedIndividualValuationSchema),
+  consensus_valuation: UnifiedConsensusValuationSchema,
+  recommendation: z.string().optional(),
+}).passthrough();
+
+export type UnifiedIndividualValuationType = z.infer<typeof UnifiedIndividualValuationSchema>;
+export type UnifiedConsensusValuationType = z.infer<typeof UnifiedConsensusValuationSchema>;
+export type UnifiedDcfResponseType = z.infer<typeof UnifiedDcfResponseSchema>;

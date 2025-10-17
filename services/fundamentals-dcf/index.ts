@@ -28,6 +28,10 @@ import type {
   ConfidenceFactor, 
   ConsensusValuation 
 } from './dcf';
+import { 
+  FundamentalsSnapshotSchema,
+  UnifiedDcfResponseSchema
+} from './dcf';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -185,7 +189,20 @@ export default {
           throw new Error('Failed to fetch fundamentals');
         }
 
-        fundamentals = dataResult.data;
+        {
+          const parsed = FundamentalsSnapshotSchema.safeParse(dataResult.data);
+          if (!parsed.success) {
+            return new Response(JSON.stringify({
+              success: false,
+              error: 'Invalid fundamentals shape',
+              issues: parsed.error.issues
+            }), {
+              status: 502,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+            });
+          }
+          fundamentals = parsed.data;
+        }
       } else {
         throw new Error('UNIFIED_DCF_URL not configured');
       }
@@ -229,7 +246,16 @@ export default {
         throw new Error(unifiedResult.error || 'Unified DCF service failed');
       }
 
-      const unifiedData = unifiedResult.data;
+      const unifiedParsed = UnifiedDcfResponseSchema.safeParse(unifiedResult.data);
+      if (!unifiedParsed.success) {
+        return new Response(JSON.stringify({
+          success: false,
+          error: 'Invalid unified DCF response shape',
+          issues: unifiedParsed.error.issues
+        }), { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+      }
+
+      const unifiedData = unifiedParsed.data;
       const modelResults = unifiedData.individual_valuations.map((valuation: any) => ({
         model: valuation.model,
         result: valuation
@@ -389,6 +415,19 @@ export default {
         );
       }
 
+      // Ensure AI fields present; synthesize if AI omitted
+      const aiFallback = buildFallbackAIAnalysis(
+        fundamentals,
+        consensusValuation as any,
+        modelResults,
+        analystAvgTarget,
+        analystCount
+      );
+      if (!ai_analysis.thesis || ai_analysis.thesis.trim().length < 20) ai_analysis.thesis = aiFallback.thesis;
+      if (!ai_analysis.bull_scenario || ai_analysis.bull_scenario.trim().length < 10) ai_analysis.bull_scenario = aiFallback.bull_scenario;
+      if (!ai_analysis.bear_scenario || ai_analysis.bear_scenario.trim().length < 10) ai_analysis.bear_scenario = aiFallback.bear_scenario;
+      if (!ai_analysis.gap_explanation || ai_analysis.gap_explanation.trim().length < 10) ai_analysis.gap_explanation = aiFallback.gap_explanation;
+
       // Add AI analysis to final result
       finalResult.ai_analysis = ai_analysis;
 
@@ -523,9 +562,9 @@ Focus on business narrative and strategic context, not just financial ratios. Be
       
       if (fallbackText && fallbackText.length > 10) {
         // Use fallback text
-        const thesisMatch = fallbackText.match(/\*\*THESIS\*\*[:\s]*(.*?)(?=\*\*BULL CASE\*\*|$)/s);
-        const bullMatch = fallbackText.match(/\*\*BULL CASE\*\*[:\s]*(.*?)(?=\*\*BEAR CASE\*\*|$)/s);
-        const bearMatch = fallbackText.match(/\*\*BEAR CASE\*\*[:\s]*(.*?)$/s);
+        const thesisMatch = fallbackText.match(/\*\*THESIS\*\*[:\s]*(.*?)(?=\*\*BULL CASE\*\*|$)/is);
+        const bullMatch = fallbackText.match(/\*\*BULL CASE\*\*[:\s]*(.*?)(?=\*\*BEAR CASE\*\*|$)/is);
+        const bearMatch = fallbackText.match(/\*\*BEAR CASE\*\*[:\s]*(.*?)$/is);
         
         const result: { thesis?: string; bull_scenario?: string; bear_scenario?: string; gap_explanation?: string } = {
           thesis: thesisMatch ? thesisMatch[1].trim() : undefined,
@@ -562,9 +601,9 @@ Focus on business narrative and strategic context, not just financial ratios. Be
     throw new Error('AI response empty after fallback attempts');
   }
 
-  const thesisMatch = text.match(/\*\*THESIS\*\*[:\s]*(.*?)(?=\*\*BULL CASE\*\*|$)/s);
-  const bullMatch = text.match(/\*\*BULL CASE\*\*[:\s]*(.*?)(?=\*\*BEAR CASE\*\*|$)/s);
-  const bearMatch = text.match(/\*\*BEAR CASE\*\*[:\s]*(.*?)$/s);
+  const thesisMatch = text.match(/\*\*THESIS\*\*[:\s]*(.*?)(?=\*\*BULL CASE\*\*|$)/is);
+  const bullMatch = text.match(/\*\*BULL CASE\*\*[:\s]*(.*?)(?=\*\*BEAR CASE\*\*|$)/is);
+  const bearMatch = text.match(/\*\*BEAR CASE\*\*[:\s]*(.*?)$/is);
 
   const result: { thesis?: string; bull_scenario?: string; bear_scenario?: string; gap_explanation?: string } = {
     thesis: thesisMatch ? thesisMatch[1].trim() : undefined,

@@ -15,25 +15,11 @@ export interface Env {
   AI_MODEL?: string;
 }
 
-// Snapshot returned by the Python unified service
-export interface FundamentalsSnapshot {
-  ticker: string;
-  company_name: string;
-  sector: string;
-  industry: string;
-  revenue: number;
-  revenue_by_segment?: Array<{
-    segment_name: string;
-    revenue: number;
-    operating_income: number;
-    margin: number;
-  }>;
-  revenue_cagr_3y: number;
-  ebitda_margin: number;
-  market_cap: number;
-  current_price: number;
-  [key: string]: any;
-}
+// Re-export shared runtime contracts (types inferred from Zod)
+export { 
+  FundamentalsSnapshotSchema,
+  type FundamentalsSnapshotType as FundamentalsSnapshot
+} from '../shared/schemas/fundamentals';
 
 // Optional model selector output shape if used in future
 export interface ModelSelectorOutput {
@@ -47,55 +33,15 @@ export interface ModelSelectorOutput {
   };
 }
 
-// Per-model valuation structure
-export interface IndividualValuation {
-  model: string;
-  model_name: string;
-  price_per_share: number;
-  price_per_share_original?: number;  // Before caps
-  enterprise_value: number;
-  upside_downside: number;
-  wacc: number;
-  assumptions?: any;
-  projections?: any[];
-  // Caps tracking
-  sanity_cap_applied?: string;
-  healthcare_cap_applied?: string;
-  [key: string]: any;
-}
+export {
+  UnifiedIndividualValuationSchema,
+  UnifiedConsensusValuationSchema,
+  UnifiedDcfResponseSchema,
+  type UnifiedIndividualValuationType as IndividualValuation,
+  type UnifiedConsensusValuationType as ConsensusValuation,
+  type ConfidenceFactor
+} from '../shared/schemas/dcf';
 
-export interface ConfidenceFactor {
-  factor: string;
-  impact: number;
-  description: string;
-}
-
-// Consensus valuation and confidence scoring
-export interface ConsensusValuation {
-  weighted_fair_value: number;
-  simple_average: number;
-  range: {
-    low: number;
-    high: number;
-  };
-  upside_to_weighted: number;
-  // Confidence scoring
-  confidence_score: number;
-  confidence_level: 'HIGH' | 'MEDIUM' | 'LOW';
-  confidence_factors: {
-    score: number;
-    level: string;
-    factors: ConfidenceFactor[];
-    interpretation: string;
-  };
-  // Weighting explanation
-  weighting_method: {
-    description: string;
-    rationale: string;
-    hmodel_weight: number | null;
-    stage3_weight: number | null;
-  };
-  method?: string;
-}
+// Confidence factor type aligns with shared schema types (inferred)
 
 
