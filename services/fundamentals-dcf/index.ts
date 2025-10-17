@@ -94,8 +94,8 @@ export default {
         let promptResult;
         try {
           const promptRes = await (env.AI as any).run(modelName as any, {
-            prompt: 'Say hello in one word.'
-          });
+          prompt: 'Say hello in one word.'
+        });
           promptResult = (promptRes as any)?.response || (promptRes as any)?.result || 'No response';
         } catch (promptError) {
           promptResult = `Prompt format error: ${promptError instanceof Error ? promptError.message : 'Unknown'}`;
@@ -682,7 +682,14 @@ async function explainGapWithAI(ai: Ai, model: string, input: {
   const dcfVsAnalyst = dcf_weighted_fair_value - analyst_avg_target;
   const dcfVsAnalystPct = Math.abs(analyst_avg_target) > 0 ? (dcfVsAnalyst / analyst_avg_target) * 100 : 0;
 
-  const systemPrompt = `You are a Senior Equity Research Analyst. Explain valuation gaps concisely, focusing on the DCF weighted consensus fair value compared to market price and analyst consensus.`;
+  const endMarker = '<<END>>';
+  const systemPrompt = `You are a Senior Equity Research Analyst. Explain valuation gaps concisely, focusing on the DCF weighted consensus fair value compared to market price and analyst consensus. 
+
+Output rules:
+- Length: 120-180 words total.
+- Structure: Exactly 4 bullet points followed by one concluding sentence.
+- Each bullet 1 sentence, objective and specific.
+- End the response with ${endMarker} (do not add anything after it).`;
   
   const userPrompt = `Explain the valuation gap for ${ticker} (${company_name || 'Unknown Company'}) in ${sector || 'equity'} sector.
 
@@ -716,13 +723,16 @@ Focus on the WEIGHTED CONSENSUS DCF value, not individual model differences.`;
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ],
-      max_tokens: 250  // Increased for more detailed analysis
+      max_tokens: 512,
+      temperature: 0.2
     });
     
     console.log('[Gap Analysis] Raw response:', JSON.stringify(res).substring(0, 200));
     
     // Return raw response - no parsing, no JSON processing
-    const gapText = (res as any)?.response || (res as any)?.result || (res as any)?.output_text || '';
+    let gapText = (res as any)?.response || (res as any)?.result || (res as any)?.output_text || '';
+    const cutIdx = gapText.indexOf(endMarker);
+    if (cutIdx >= 0) gapText = gapText.slice(0, cutIdx).trim();
     console.log('[Gap Analysis] Extracted text length:', gapText.length);
     
     // If we got a valid response, return it
@@ -740,10 +750,13 @@ Focus on the WEIGHTED CONSENSUS DCF value, not individual model differences.`;
   try {
     const fallbackRes = await (ai as any).run(model as any, {
       prompt: `${systemPrompt}\n\n${userPrompt}`,
-      max_tokens: 250
+      max_tokens: 512,
+      temperature: 0.2
     });
     
-    const fallbackText = (fallbackRes as any)?.response || (fallbackRes as any)?.result || (fallbackRes as any)?.output_text || '';
+    let fallbackText = (fallbackRes as any)?.response || (fallbackRes as any)?.result || (fallbackRes as any)?.output_text || '';
+    const fIdx = fallbackText.indexOf(endMarker);
+    if (fIdx >= 0) fallbackText = fallbackText.slice(0, fIdx).trim();
     console.log('[Gap Analysis] Fallback response length:', fallbackText.length);
     
     if (fallbackText && fallbackText.length > 10) {
