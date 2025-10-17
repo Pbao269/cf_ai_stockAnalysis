@@ -450,7 +450,12 @@ async function generateAiAnalysis(input: {
 
   const systemPrompt = `You are a Senior Equity Research Analyst. Provide comprehensive investment analysis with clear structure using **THESIS**, **BULL CASE**, and **BEAR CASE** headers.`;
   
-  const userPrompt = `Analyze ${ticker} and provide investment analysis.
+  const companyName = fundamentals.company_name || ticker;
+  const sector = fundamentals.sector || 'Unknown';
+  
+  const userPrompt = `Analyze ${ticker} (${companyName}) in the ${sector} sector and provide investment analysis.
+
+IMPORTANT: You are analyzing ${companyName} (ticker: ${ticker}). Do not confuse this with any other company.
 
 FUNDAMENTAL DATA:
 - Current Price: $${fundamentals.current_price}
@@ -658,7 +663,7 @@ CONTEXT (for reference only):
 • EBITDA Margin: ${ebitdaMargin}% | FCF Margin: ${fcfMargin}%
 • Economic Moat: ${moat} (strength: ${moatScore}/100)
 
-TASK: Write 3-4 sentences explaining:
+TASK: Write 2-3 sentences explaining:
 1. Why DCF weighted consensus (${dcf_weighted_fair_value.toFixed(2)}) differs from market price (${current_price.toFixed(2)})
 2. Why DCF differs from analyst consensus (${analyst_avg_target.toFixed(2)})
 3. What business/market factors drive these gaps (growth assumptions, risk perception, market sentiment, moat quality, etc.)
