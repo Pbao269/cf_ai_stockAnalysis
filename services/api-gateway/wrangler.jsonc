@@ -4,42 +4,18 @@
   "main": "index.ts",
   "compatibility_date": "2024-12-01",
   "compatibility_flags": ["nodejs_compat"],
-  "service_bindings": [
+  "services": [
     {
-      "name": "intent",
-      "service": "intent-mvp"
-    },
-    {
-      "name": "screener", 
-      "service": "screener-mvp"
-    },
-    {
-      "name": "fundamentals-dcf",
+      "binding": "fundamentals-dcf",
       "service": "fundamentals-dcf-mvp"
     },
     {
-      "name": "technicals",
+      "binding": "technicals",
       "service": "technicals-mvp"
     },
     {
-      "name": "catalyst-sentiment",
-      "service": "catalyst-sentiment-mvp"
-    },
-    {
-      "name": "entry-dca",
+      "binding": "entry-dca",
       "service": "entry-dca-mvp"
-    },
-    {
-      "name": "user-data",
-      "service": "user-data-mvp"
-    },
-    {
-      "name": "notion-export",
-      "service": "notion-export-mvp"
-    },
-    {
-      "name": "etl-workflows",
-      "service": "etl-workflows-mvp"
     }
   ],
   "kv_namespaces": [
