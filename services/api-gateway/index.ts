@@ -3,7 +3,6 @@ import { Intent, type IntentType } from '../shared/schemas/intent';
 import { ScreenHit, type ScreenHitType } from '../shared/schemas/screen';
 import { Facts, type FactsType } from '../shared/schemas/facts';
 import { DcfOutput, type DcfOutputType } from '../shared/schemas/dcf';
-import { CatalystOutput, type CatalystOutputType } from '../shared/schemas/catalyst';
 import { TechOutput, type TechOutputType } from '../shared/schemas/tech';
 import { DcaOutput, type DcaOutputType } from '../shared/schemas/dca';
 import { SynthesisOutput, type SynthesisOutputType } from '../shared/schemas/synthesis';
@@ -25,11 +24,11 @@ export interface Env {
   screener: Fetcher;
   'fundamentals-dcf': Fetcher;
   technicals: Fetcher;
-  'catalyst-sentiment': Fetcher;
   'entry-dca': Fetcher;
   'user-data': Fetcher;
-  'notion-export': Fetcher;
-  'etl-workflows': Fetcher;
+  // Optional services
+  'notion-export'?: Fetcher;
+  'etl-workflows'?: Fetcher;
 }
 
 /**
@@ -108,7 +107,7 @@ async function handleHealthCheck(env: Env, corsHeaders: Record<string, string>):
   };
 
   // Check each service
-  const services = ['intent', 'screener', 'fundamentals-dcf', 'technicals', 'catalyst-sentiment', 'entry-dca', 'user-data'];
+  const services = ['intent', 'screener', 'fundamentals-dcf', 'technicals', 'entry-dca', 'user-data'];
   
   for (const serviceName of services) {
     const startTime = Date.now();
@@ -321,11 +320,6 @@ async function runAnalysisPipeline(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ symbol: ticker })
       }),
-      env['catalyst-sentiment'].fetch('http://localhost/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: ticker })
-      }),
       env['entry-dca'].fetch('http://localhost/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -340,12 +334,11 @@ async function runAnalysisPipeline(
     const analysisResults = {
       dcf: null as DcfOutputType | null,
       technicals: null as TechOutputType | null,
-      catalysts: null as CatalystOutputType | null,
       dca: null as DcaOutputType | null
     };
 
     // Process results
-    const serviceNames = ['dcf', 'technicals', 'catalysts', 'dca'];
+    const serviceNames = ['dcf', 'technicals', 'dca'];
     results.forEach((result, index) => {
       if (result.status === 'fulfilled' && result.value.ok) {
         sendEvent('analysis_complete', { service: serviceNames[index], ticker });
@@ -354,37 +347,42 @@ async function runAnalysisPipeline(
       }
     });
 
-    // Phase 3: Build facts registry
-    sendEvent('phase', { name: 'building_facts', progress: 50 });
-    
-    let factsData: { success: boolean; data: FactsType } | null = null;
-    const factsResponse = await env['etl-workflows'].fetch('http://localhost/build', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol: ticker })
-    });
+    // Phase 3: Build facts registry (optional - requires etl-workflows)
+    if (env['etl-workflows']) {
+      sendEvent('phase', { name: 'building_facts', progress: 50 });
+      
+      try {
+        const factsResponse = await env['etl-workflows'].fetch('http://localhost/build', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbol: ticker })
+        });
 
-    if (factsResponse.ok) {
-      factsData = await factsResponse.json() as { success: boolean; data: FactsType };
-      sendEvent('facts_complete', { ticker, facts: factsData.data });
-    }
+        if (factsResponse.ok) {
+          const factsData = await factsResponse.json() as { success: boolean; data: FactsType };
+          sendEvent('facts_complete', { ticker, facts: factsData.data });
+          
+          // Phase 4: Synthesize report
+          sendEvent('phase', { name: 'synthesizing_report', progress: 75 });
+          
+          const synthesisResponse = await env['etl-workflows'].fetch('http://localhost/synthesizeReport', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+              symbol: ticker,
+              analysis_results: analysisResults,
+              facts: factsData.data
+            })
+          });
 
-    // Phase 4: Synthesize report
-    sendEvent('phase', { name: 'synthesizing_report', progress: 75 });
-    
-    const synthesisResponse = await env['etl-workflows'].fetch('http://localhost/synthesizeReport', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        symbol: ticker,
-        analysis_results: analysisResults,
-        facts: factsData?.data
-      })
-    });
-
-    if (synthesisResponse.ok) {
-      const synthesisData = await synthesisResponse.json() as { success: boolean; data: SynthesisOutputType };
-      sendEvent('synthesis_complete', { ticker, report: synthesisData.data });
+          if (synthesisResponse.ok) {
+            const synthesisData = await synthesisResponse.json() as { success: boolean; data: SynthesisOutputType };
+            sendEvent('synthesis_complete', { ticker, report: synthesisData.data });
+          }
+        }
+      } catch (error) {
+        console.log('[ETL Workflows] Optional service not available or failed');
+      }
     }
 
     // Phase 5: Complete
@@ -402,6 +400,17 @@ async function runAnalysisPipeline(
  * POST /export/notion - Call notion-export.exportPage (optional)
  */
 async function handleNotionExport(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
+  // Check if notion-export service is available
+  if (!env['notion-export']) {
+    return new Response(JSON.stringify({
+      success: false,
+      error: 'Notion export service is not enabled'
+    }), {
+      status: 503,
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
+  }
+
   try {
     const { report, notionToken } = await request.json() as { 
       report: any; 

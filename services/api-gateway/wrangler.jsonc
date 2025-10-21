@@ -22,26 +22,17 @@
       "service": "technicals-mvp"
     },
     {
-      "binding": "catalyst-sentiment",
-      "service": "catalyst-sentiment-mvp"
-    },
-    {
       "binding": "entry-dca",
       "service": "entry-dca-mvp"
     },
     {
       "binding": "user-data",
       "service": "user-data-mvp"
-    },
-    {
-      "binding": "notion-export",
-      "service": "notion-export-mvp"
-    },
-    {
-      "binding": "etl-workflows",
-      "service": "etl-workflows-mvp"
     }
   ],
+  "# Optional services (uncomment when needed)": "",
+  "# notion-export": { "binding": "notion-export", "service": "notion-export-mvp" },
+  "# etl-workflows": { "binding": "etl-workflows", "service": "etl-workflows-mvp" },
   "kv_namespaces": [
     {
       "binding": "FUNDAMENTALS_SNAP",

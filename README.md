@@ -6,16 +6,20 @@ Cloudflare Workers-based stock analysis platform with AI-powered intent parsing 
 
 Microservices deployed as Cloudflare Workers:
 
-- **api-gateway**: Central routing and service orchestration
-- **intent**: Natural language processing using Workers AI
-- **screener**: Stock screening and filtering
-- **fundamentals-dcf**: Fundamental analysis and DCF modeling
-- **technicals**: Technical analysis and indicators
-- **catalyst-sentiment**: News sentiment analysis
-- **entry-dca**: Entry strategies and DCA recommendations
-- **user-data**: User preferences and watchlists
-- **notion-export**: Report export to Notion (optional)
-- **etl-workflows**: Data processing and scheduled tasks
+### Core Services
+
+- **api-gateway** - Routes requests via Workers RPC, handles SSE streaming for parallel analysis
+- **intent** - Parses natural language queries into structured filters using Workers AI (Llama 3.1)
+- **screener** - Filters stocks using technical + fundamental criteria from cached KV/R2 data
+- **fundamentals-dcf** - Runs 3-Stage and H-Model DCF valuations, generates AI thesis/bull/bear scenarios
+- **technicals** - Calculates indicators (RSI, MACD, ADX, ATR), detects market regimes, finds support/resistance
+- **entry-dca** - Backtests 6 DCA strategies (lump-sum, fixed, ATR-weighted, drawdown, Fibonacci) with risk metrics
+- **user-data** - Stores watchlists and preferences in D1 database
+
+### Optional Services
+
+- **notion-export** - Exports analysis reports to Notion pages (disabled by default)
+- **etl-workflows** - Aggregates facts and synthesizes final reports (disabled by default)
 
 ## Setup
 
@@ -62,17 +66,16 @@ Microservices deployed as Cloudflare Workers:
 
 ```
 services/
-├── api-gateway/         # Central API gateway
-├── intent/              # Natural language processing
-├── screener/            # Stock screening
-├── fundamentals-dcf/    # Fundamental analysis
-├── technicals/          # Technical analysis
-├── catalyst-sentiment/  # News sentiment
-├── entry-dca/           # Entry strategies
-├── user-data/           # User preferences
-├── notion-export/       # Notion integration
-├── etl-workflows/       # Data processing
-└── shared/schemas/      # Zod schemas
+├── api-gateway/         # Request routing and orchestration
+├── intent/              # NLP query parsing
+├── screener/            # Stock filtering
+├── fundamentals-dcf/    # DCF valuation + AI analysis
+├── technicals/          # Indicators + regime detection
+├── entry-dca/           # DCA strategy backtesting
+├── user-data/           # Watchlists (D1)
+├── notion-export/       # [Optional] Notion integration
+├── etl-workflows/       # [Optional] Report synthesis
+└── shared/schemas/      # Zod validation schemas
 ```
 
 ## Development
@@ -130,18 +133,22 @@ const response = await env.intent.fetch('http://localhost/extract', {
 
 ## AI Integration
 
-Uses Workers AI with `@cf/meta/llama-3.3-70b-instruct-fp8-fast` for:
+Workers AI with `@cf/meta/llama-3.1-8b-instruct-fp8` for:
 
-- Natural language intent parsing
-- Sentiment analysis
-- Report generation
+- **Intent parsing** - Converts queries like "undervalued tech stocks" into structured filters
+- **DCF analysis** - Generates investment thesis, bull/bear scenarios, and gap explanations
+- **Report synthesis** - Aggregates multi-service results into cohesive narratives (optional)
 
 ## Configuration
 
-Each service has its own `wrangler.jsonc` with specific bindings:
+Each service has its own `wrangler.jsonc`:
 
-- **intent**: AI binding
-- **user-data**: D1 database binding
-- **api-gateway**: All bindings + service bindings
-- **screener**: KV namespace binding
-- **technicals**: R2 bucket binding
+- **api-gateway** - Service bindings to all workers, KV (FUNDAMENTALS_SNAP, LATEST_QUOTES, SCREENER_INDEX), R2 (ohlcv-mvp), D1 (user-db-mvp), AI
+- **intent** - AI binding
+- **screener** - KV (SCREENER_INDEX) for cached stock universe
+- **fundamentals-dcf** - KV (FUNDAMENTALS_SNAP), AI binding
+- **technicals** - KV (CACHE), external Python backend URL (Render.com)
+- **entry-dca** - KV (CACHE), external Python backend URL (Render.com)
+- **user-data** - D1 (user-db-mvp)
+
+To enable optional services, uncomment their bindings in `api-gateway/wrangler.jsonc`
