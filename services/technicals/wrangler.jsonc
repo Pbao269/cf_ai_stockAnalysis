@@ -5,12 +5,12 @@
   "compatibility_date": "2024-12-01",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
-    "TECHNICALS_URL": "http://localhost:8087"
+    "TECHNICALS_URL": "https://cf-ai-stockanalysis-1.onrender.com"
   },
   "kv_namespaces": [
     {
       "binding": "CACHE",
-      "id": "placeholder"
+      "id": "90d119abad044602995614b87f6f85a4"
     }
   ]
 }
