@@ -6,6 +6,14 @@
   "compatibility_flags": ["nodejs_compat"],
   "services": [
     {
+      "binding": "intent",
+      "service": "intent-mvp"
+    },
+    {
+      "binding": "screener", 
+      "service": "screener-mvp"
+    },
+    {
       "binding": "fundamentals-dcf",
       "service": "fundamentals-dcf-mvp"
     },
@@ -14,8 +22,24 @@
       "service": "technicals-mvp"
     },
     {
+      "binding": "catalyst-sentiment",
+      "service": "catalyst-sentiment-mvp"
+    },
+    {
       "binding": "entry-dca",
       "service": "entry-dca-mvp"
+    },
+    {
+      "binding": "user-data",
+      "service": "user-data-mvp"
+    },
+    {
+      "binding": "notion-export",
+      "service": "notion-export-mvp"
+    },
+    {
+      "binding": "etl-workflows",
+      "service": "etl-workflows-mvp"
     }
   ],
   "kv_namespaces": [
