@@ -8,6 +8,7 @@ Provides comprehensive technical analysis including:
 - Support/Resistance levels
 - Fibonacci retracements
 - Market regime detection
+- Short interest analysis (institutional shorting warnings)
 """
 
 import logging
@@ -35,9 +36,9 @@ def root():
     """Root endpoint"""
     return jsonify({
         'service': 'technicals',
-        'version': '1.0.0',
+        'version': '1.1.0',
         'status': 'running',
-        'description': 'Technical analysis service with indicators, regime detection, and levels',
+        'description': 'Technical analysis service with indicators, regime detection, levels, and short interest warnings',
         'endpoints': {
             'health': '/health',
             'analyze': '/analyze (POST)'
@@ -96,6 +97,9 @@ def analyze():
         # Calculate Fibonacci levels
         fibonacci = calculate_fibonacci_levels(df)
         
+        # Get short interest data (institutional shorting warning)
+        short_interest = get_short_interest(ticker)
+        
         # Determine bias and confidence
         bias, confidence = determine_bias(indicators, regime)
         
@@ -113,6 +117,7 @@ def analyze():
                 'support_resistance': levels,
                 'fibonacci': fibonacci
             },
+            'short_interest': short_interest,
             'summary': generate_summary(bias, confidence, regime, current_price, levels),
             'timestamp': datetime.now().isoformat()
         }
@@ -152,6 +157,114 @@ def fetch_ohlcv(ticker: str, period: str = '1y', interval: str = '1d') -> Option
     except Exception as e:
         logger.error(f"yfinance error: {e}, using mock")
         return get_mock_ohlcv(ticker)
+
+
+def get_short_interest(ticker: str) -> Dict[str, Any]:
+    """
+    Get short interest data to warn about institutional shorting
+    
+    Returns:
+        short_pct_float: % of float that is sold short
+        days_to_cover: Days to cover all short positions
+        short_ratio: Short interest ratio
+        warning_level: none/caution/warning/danger
+        warning_message: Human-readable warning
+    """
+    if not YFINANCE_AVAILABLE:
+        return {
+            'available': False,
+            'warning_level': 'unknown',
+            'warning_message': 'Short interest data unavailable'
+        }
+    
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        
+        # Get short interest metrics
+        short_pct_float = info.get('shortPercentOfFloat', None)
+        short_ratio = info.get('shortRatio', None)  # Days to cover
+        shares_short = info.get('sharesShort', None)
+        shares_short_prior = info.get('sharesShortPriorMonth', None)
+        
+        # Calculate if data is available
+        if short_pct_float is None:
+            return {
+                'available': False,
+                'warning_level': 'unknown',
+                'warning_message': 'Short interest data not available for this ticker'
+            }
+        
+        # Convert to percentage if needed
+        if short_pct_float < 1:
+            short_pct_float = short_pct_float * 100
+        
+        # Calculate short interest trend (increasing or decreasing)
+        short_trend = 'stable'
+        if shares_short is not None and shares_short_prior is not None and shares_short_prior > 0:
+            change_pct = ((shares_short - shares_short_prior) / shares_short_prior) * 100
+            if change_pct > 10:
+                short_trend = 'increasing'
+            elif change_pct < -10:
+                short_trend = 'decreasing'
+        
+        # Determine warning level based on thresholds
+        warning_level = 'none'
+        warning_message = f'Short interest at {short_pct_float:.1f}% is normal'
+        
+        if short_pct_float >= 40:
+            warning_level = 'danger'
+            warning_message = f'⚠️ EXTREME SHORT INTEREST ({short_pct_float:.1f}% of float) - Institutions heavily shorting. High risk of catching falling knife.'
+        elif short_pct_float >= 20:
+            warning_level = 'warning'
+            warning_message = f'⚠️ HIGH SHORT INTEREST ({short_pct_float:.1f}% of float) - Significant institutional shorting. Exercise caution.'
+        elif short_pct_float >= 10:
+            warning_level = 'caution'
+            warning_message = f'Elevated short interest ({short_pct_float:.1f}% of float) - Moderate shorting pressure.'
+        elif short_pct_float >= 5:
+            warning_level = 'low'
+            warning_message = f'Low short interest ({short_pct_float:.1f}% of float) - Minimal shorting pressure.'
+        
+        # Add days to cover context
+        if short_ratio is not None and short_ratio > 0:
+            if short_ratio > 10:
+                warning_message += f' Days to cover: {short_ratio:.1f} (very high - potential squeeze risk).'
+            elif short_ratio > 5:
+                warning_message += f' Days to cover: {short_ratio:.1f} (high).'
+            else:
+                warning_message += f' Days to cover: {short_ratio:.1f}.'
+        
+        # Add trend context
+        if short_trend == 'increasing':
+            warning_message += ' Short interest is INCREASING - bearish signal.'
+        elif short_trend == 'decreasing':
+            warning_message += ' Short interest is decreasing - bullish signal.'
+        
+        return {
+            'available': True,
+            'short_pct_float': round(short_pct_float, 2),
+            'short_ratio': round(short_ratio, 2) if short_ratio else None,
+            'shares_short': int(shares_short) if shares_short else None,
+            'shares_short_prior': int(shares_short_prior) if shares_short_prior else None,
+            'short_trend': short_trend,
+            'warning_level': warning_level,
+            'warning_message': warning_message,
+            'interpretation': {
+                'danger': short_pct_float >= 40,
+                'high': short_pct_float >= 20,
+                'moderate': short_pct_float >= 10,
+                'low': short_pct_float >= 5,
+                'minimal': short_pct_float < 5
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Short interest fetch error for {ticker}: {e}")
+        return {
+            'available': False,
+            'warning_level': 'unknown',
+            'warning_message': f'Failed to fetch short interest: {str(e)}'
+        }
 
 
 def calculate_indicators(df: pd.DataFrame) -> Dict[str, Any]:

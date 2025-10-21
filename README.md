@@ -12,7 +12,7 @@ Microservices deployed as Cloudflare Workers:
 - **intent** - Parses natural language queries into structured filters using Workers AI (Llama 3.1)
 - **screener** - Filters stocks using technical + fundamental criteria from cached KV/R2 data
 - **fundamentals-dcf** - Runs 3-Stage and H-Model DCF valuations, generates AI thesis/bull/bear scenarios
-- **technicals** - Calculates indicators (RSI, MACD, ADX, ATR), detects market regimes, finds support/resistance
+- **technicals** - Calculates indicators (RSI, MACD, ADX, ATR), detects market regimes, finds support/resistance, warns about institutional shorting (short interest >20% = high risk)
 - **entry-dca** - Backtests 6 DCA strategies (lump-sum, fixed, ATR-weighted, drawdown, Fibonacci) with risk metrics
 - **user-data** - Stores watchlists and preferences in D1 database
 
