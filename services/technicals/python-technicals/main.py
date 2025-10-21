@@ -139,24 +139,43 @@ def analyze():
 
 
 def fetch_ohlcv(ticker: str, period: str = '1y', interval: str = '1d') -> Optional[pd.DataFrame]:
-    """Fetch OHLCV data from yfinance"""
+    """Fetch OHLCV data from yfinance with retry logic"""
     if not YFINANCE_AVAILABLE:
         return get_mock_ohlcv(ticker)
     
-    try:
-        stock = yf.Ticker(ticker)
-        df = stock.history(period=period, interval=interval)
-        
-        if df.empty:
-            logger.warning(f"No data for {ticker}, using mock")
+    import time
+    max_retries = 3
+    
+    for attempt in range(max_retries):
+        try:
+            # Use download method with proper headers (more reliable than Ticker.history)
+            df = yf.download(
+                ticker,
+                period=period,
+                interval=interval,
+                progress=False,
+                show_errors=False,
+                timeout=10
+            )
+            
+            if df.empty:
+                if attempt < max_retries - 1:
+                    logger.warning(f"No data for {ticker} (attempt {attempt+1}/{max_retries}), retrying...")
+                    time.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+                    continue
+                logger.warning(f"No data for {ticker} after {max_retries} attempts, using mock")
+                return get_mock_ohlcv(ticker)
+            
+            logger.info(f"Fetched {len(df)} bars for {ticker}")
+            return df
+            
+        except Exception as e:
+            if attempt < max_retries - 1:
+                logger.warning(f"yfinance error for {ticker} (attempt {attempt+1}/{max_retries}): {e}, retrying...")
+                time.sleep(2 ** attempt)
+                continue
+            logger.error(f"yfinance error for {ticker} after {max_retries} attempts: {e}, using mock")
             return get_mock_ohlcv(ticker)
-        
-        logger.info(f"Fetched {len(df)} bars for {ticker}")
-        return df
-        
-    except Exception as e:
-        logger.error(f"yfinance error: {e}, using mock")
-        return get_mock_ohlcv(ticker)
 
 
 def get_short_interest(ticker: str) -> Dict[str, Any]:
@@ -177,9 +196,35 @@ def get_short_interest(ticker: str) -> Dict[str, Any]:
             'warning_message': 'Short interest data unavailable'
         }
     
+    import time
+    max_retries = 2
+    
+    for attempt in range(max_retries):
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            
+            # Check if info is empty or invalid
+            if not info or not isinstance(info, dict):
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                raise ValueError("No valid data returned")
+            
+            break  # Success, exit retry loop
+            
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(1)
+                continue
+            logger.error(f"Short interest fetch error for {ticker}: {e}")
+            return {
+                'available': False,
+                'warning_level': 'unknown',
+                'warning_message': 'Short interest data temporarily unavailable'
+            }
+    
     try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
         
         # Get short interest metrics
         short_pct_float = info.get('shortPercentOfFloat', None)
@@ -259,11 +304,11 @@ def get_short_interest(ticker: str) -> Dict[str, Any]:
         }
         
     except Exception as e:
-        logger.error(f"Short interest fetch error for {ticker}: {e}")
+        logger.warning(f"Short interest parsing error for {ticker}: {e}")
         return {
             'available': False,
             'warning_level': 'unknown',
-            'warning_message': f'Failed to fetch short interest: {str(e)}'
+            'warning_message': 'Short interest data temporarily unavailable'
         }
 
 
