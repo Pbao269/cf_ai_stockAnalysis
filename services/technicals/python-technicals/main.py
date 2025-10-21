@@ -139,24 +139,25 @@ def analyze():
 
 
 def fetch_ohlcv(ticker: str, period: str = '1y', interval: str = '1d') -> Optional[pd.DataFrame]:
-    """Fetch OHLCV data from yfinance with retry logic"""
+    """Fetch OHLCV data from yfinance with retry logic and custom headers"""
     if not YFINANCE_AVAILABLE:
         return get_mock_ohlcv(ticker)
     
     import time
+    import requests
     max_retries = 3
+    
+    # Set up a custom session with User-Agent header to avoid being blocked
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    })
     
     for attempt in range(max_retries):
         try:
-            # Use download method with proper headers (more reliable than Ticker.history)
-            df = yf.download(
-                ticker,
-                period=period,
-                interval=interval,
-                progress=False,
-                show_errors=False,
-                timeout=10
-            )
+            # Use Ticker.history() method with custom session (recommended approach)
+            stock = yf.Ticker(ticker, session=session)
+            df = stock.history(period=period, interval=interval)
             
             if df.empty:
                 if attempt < max_retries - 1:
@@ -197,11 +198,18 @@ def get_short_interest(ticker: str) -> Dict[str, Any]:
         }
     
     import time
+    import requests
     max_retries = 2
+    
+    # Set up a custom session with User-Agent header to avoid being blocked
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    })
     
     for attempt in range(max_retries):
         try:
-            stock = yf.Ticker(ticker)
+            stock = yf.Ticker(ticker, session=session)
             info = stock.info
             
             # Check if info is empty or invalid
