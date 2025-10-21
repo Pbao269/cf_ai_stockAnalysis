@@ -139,24 +139,17 @@ def analyze():
 
 
 def fetch_ohlcv(ticker: str, period: str = '1y', interval: str = '1d') -> Optional[pd.DataFrame]:
-    """Fetch OHLCV data from yfinance with retry logic and custom headers"""
+    """Fetch OHLCV data from yfinance with retry logic"""
     if not YFINANCE_AVAILABLE:
         return get_mock_ohlcv(ticker)
     
     import time
-    import requests
     max_retries = 3
-    
-    # Set up a custom session with User-Agent header to avoid being blocked
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    })
     
     for attempt in range(max_retries):
         try:
-            # Use Ticker.history() method with custom session (recommended approach)
-            stock = yf.Ticker(ticker, session=session)
+            # yfinance 0.2.66+ uses curl_cffi internally, no need for custom session
+            stock = yf.Ticker(ticker)
             df = stock.history(period=period, interval=interval)
             
             if df.empty:
@@ -198,18 +191,12 @@ def get_short_interest(ticker: str) -> Dict[str, Any]:
         }
     
     import time
-    import requests
     max_retries = 2
-    
-    # Set up a custom session with User-Agent header to avoid being blocked
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    })
     
     for attempt in range(max_retries):
         try:
-            stock = yf.Ticker(ticker, session=session)
+            # yfinance 0.2.66+ uses curl_cffi internally, no need for custom session
+            stock = yf.Ticker(ticker)
             info = stock.info
             
             # Check if info is empty or invalid
