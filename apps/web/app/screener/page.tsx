@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { motion } from 'framer-motion';
 import ScreenerResults from '@/components/ScreenerResults';
@@ -8,11 +8,11 @@ import AdvancedScreener from '@/components/AdvancedScreener';
 import { ScreenerFilters, ScreenerResult } from '@/lib/types';
 import { screenStocks } from '@/lib/api';
 
-export default function ScreenerPage() {
+function ScreenerContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [showAdvanced, setShowAdvanced] = useState(true);
-  const [results, setResults] = useState<ScreenerResult[] | null>(null);
+  const [results, setResults] = useState<{ hits: ScreenerResult[] } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
 
   const handleSearch = async (filters: ScreenerFilters) => {
@@ -20,7 +20,7 @@ export default function ScreenerPage() {
     try {
       const screening = await screenStocks(filters);
       if (screening.success) {
-        setResults(screening.data.hits);
+        setResults(screening.data);
         setShowAdvanced(false);
       }
     } catch (error) {
@@ -83,16 +83,35 @@ export default function ScreenerPage() {
               onSearch={handleSearch}
               isLoading={isLoading}
             />
-          ) : (
+          ) : results ? (
             <ScreenerResults
               results={results}
               onStockSelect={handleStockSelect}
               onBack={handleBack}
               isLoading={isLoading}
             />
+          ) : (
+            <div className="text-center text-muted-foreground py-8">
+              No results found. Please try different filters.
+            </div>
           )}
         </motion.div>
       </main>
     </div>
+  );
+}
+
+export default function ScreenerPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Loading screener...</p>
+        </div>
+      </div>
+    }>
+      <ScreenerContent />
+    </Suspense>
   );
 }

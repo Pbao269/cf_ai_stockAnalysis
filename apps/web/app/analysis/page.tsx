@@ -1,13 +1,13 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { motion } from 'framer-motion';
 import StockAnalysis from '@/components/StockAnalysis';
 import { StockAnalysis as StockAnalysisType } from '@/lib/types';
 import { analyzeStock } from '@/lib/api';
 
-export default function AnalysisPage() {
+function AnalysisContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const ticker = searchParams.get('ticker');
@@ -110,5 +110,20 @@ export default function AnalysisPage() {
         </motion.div>
       </main>
     </div>
+  );
+}
+
+export default function AnalysisPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-8 h-8 border-4 border-primary border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Loading analysis...</p>
+        </div>
+      </div>
+    }>
+      <AnalysisContent />
+    </Suspense>
   );
 }
