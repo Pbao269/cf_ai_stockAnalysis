@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { motion } from 'framer-motion';
 import ScreenerResults from '@/components/ScreenerResults';
 import AdvancedScreener from '@/components/AdvancedScreener';
+import ThemeToggle from '@/components/ThemeToggle';
 import { ScreenerFilters, ScreenerResult } from '@/lib/types';
 import { screenStocks } from '@/lib/api';
 
@@ -14,6 +15,20 @@ function ScreenerContent() {
   const [showAdvanced, setShowAdvanced] = useState(true);
   const [results, setResults] = useState<{ hits: ScreenerResult[] } | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+
+  // Check for results in URL parameters
+  useEffect(() => {
+    const resultsParam = searchParams.get('results');
+    if (resultsParam) {
+      try {
+        const parsedResults = JSON.parse(decodeURIComponent(resultsParam));
+        setResults(parsedResults);
+        setShowAdvanced(false);
+      } catch (error) {
+        console.error('Error parsing results from URL:', error);
+      }
+    }
+  }, [searchParams]);
 
   const handleSearch = async (filters: ScreenerFilters) => {
     setIsLoading(true);
@@ -65,6 +80,7 @@ function ScreenerContent() {
             >
               💬 Return to Chat
             </button>
+            <ThemeToggle />
           </div>
         </div>
       </header>

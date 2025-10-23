@@ -4,6 +4,7 @@ import { useState, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { motion } from 'framer-motion';
 import StockAnalysis from '@/components/StockAnalysis';
+import ThemeToggle from '@/components/ThemeToggle';
 import { StockAnalysis as StockAnalysisType } from '@/lib/types';
 import { analyzeStock } from '@/lib/api';
 
@@ -92,6 +93,7 @@ function AnalysisContent() {
             >
               ← Back
             </button>
+            <ThemeToggle />
           </div>
         </div>
       </header>

@@ -4,6 +4,7 @@ import { useState, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { useRouter } from 'next/navigation';
 import ChatInterface from '@/components/ChatInterface';
+import ThemeToggle from '@/components/ThemeToggle';
 import { ChatMessage } from '@/lib/types';
 import { generateId, classifyInput } from '@/lib/utils';
 import { parseIntent, screenStocks, analyzeStock } from '@/lib/api';
@@ -39,7 +40,9 @@ export default function LandingPage() {
         if (intent.success) {
           const screening = await screenStocks(intent.data);
           if (screening.success) {
-            router.push('/screener');
+            // Pass results via URL to screener page
+            const resultsParam = encodeURIComponent(JSON.stringify(screening.data));
+            router.push(`/screener?results=${resultsParam}`);
           }
         }
       }
@@ -75,6 +78,7 @@ export default function LandingPage() {
             >
               Advanced Search
             </button>
+            <ThemeToggle />
           </div>
         </div>
       </header>
