@@ -65,7 +65,7 @@ export default function ScreenerResults({
             transition={{ delay: index * 0.1 }}
           >
             <Card 
-              className="cursor-pointer hover:shadow-lg transition-all duration-200 hover:scale-[1.02]"
+              className="cursor-pointer shadow-elevated hover-lift"
               onClick={() => onStockSelect(stock.symbol)}
             >
               <CardHeader className="pb-3">
@@ -152,7 +152,7 @@ export default function ScreenerResults({
 
                 {/* Action Button */}
                 <Button 
-                  className="w-full" 
+                  className="w-full shadow-elevated hover-lift" 
                   disabled={isLoading}
                 >
                   {isLoading ? 'Analyzing...' : 'Analyze Stock'}

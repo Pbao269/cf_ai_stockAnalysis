@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect } from 'react';
-import { Send, Mic, Paperclip, Loader2 } from 'lucide-react';
+import { Send, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,6 +16,7 @@ interface ChatInterfaceProps {
   isMinimized?: boolean;
   placeholder?: string;
   showSuggestions?: boolean;
+  className?: string;
 }
 
 const suggestions = [
@@ -38,6 +39,7 @@ export default function ChatInterface({
   isMinimized = false,
   placeholder = "Ask anything...",
   showSuggestions = true,
+  className,
 }: ChatInterfaceProps) {
   const [input, setInput] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -55,7 +57,7 @@ export default function ChatInterface({
     e.preventDefault();
     if (input.trim() && !isLoading) {
       onSendMessage(input.trim());
-      setInput('');
+      // Don't clear input - keep it like a search engine
     }
   };
 
@@ -66,7 +68,8 @@ export default function ChatInterface({
   return (
     <div className={cn(
       "flex flex-col transition-all duration-300",
-      isMinimized ? "h-auto" : "h-full"
+      isMinimized ? "h-auto" : "h-full",
+      className
     )}>
       {/* Messages */}
       <AnimatePresence mode="wait">
@@ -89,7 +92,7 @@ export default function ChatInterface({
               >
                 <Card
                   className={cn(
-                    "max-w-[80%] p-4",
+                    "max-w-[80%] p-4 shadow-elevated",
                     message.role === 'user'
                       ? 'bg-primary text-primary-foreground border-primary'
                       : 'bg-muted'
@@ -115,38 +118,20 @@ export default function ChatInterface({
               onChange={(e) => setInput(e.target.value)}
               placeholder={placeholder}
               disabled={isLoading}
-              className="pr-24 h-12 text-base"
+              className="pr-16 h-14 text-lg shadow-elevated hover:shadow-elevated-lg focus:shadow-elevated-lg transition-shadow"
             />
             <div className="absolute right-2 flex items-center gap-1">
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                aria-label="Voice input"
-              >
-                <Mic className="h-4 w-4" />
-              </Button>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8"
-                aria-label="Attach file"
-              >
-                <Paperclip className="h-4 w-4" />
-              </Button>
               <Button
                 type="submit"
                 size="icon"
                 disabled={!input.trim() || isLoading}
-                className="h-8 w-8"
+                className="h-10 w-10 shadow-elevated hover-lift"
                 aria-label="Send message"
               >
                 {isLoading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <Loader2 className="h-5 w-5 animate-spin" />
                 ) : (
-                  <Send className="h-4 w-4" />
+                  <Send className="h-5 w-5" />
                 )}
               </Button>
             </div>
@@ -159,17 +144,17 @@ export default function ChatInterface({
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.2 }}
-            className="mt-4 space-y-3"
+            className="mt-6 space-y-4"
           >
             <div className="flex flex-wrap gap-2">
-              <span className="text-xs text-muted-foreground w-full">💡 Try:</span>
+              <span className="text-sm text-muted-foreground w-full">💡 Try:</span>
               {suggestions.map((suggestion, index) => (
                 <Button
                   key={index}
                   variant="outline"
                   size="sm"
                   onClick={() => handleSuggestionClick(suggestion)}
-                  className="h-8 text-xs"
+                  className="h-9 text-sm shadow-elevated hover-lift"
                 >
                   {suggestion}
                 </Button>
@@ -178,14 +163,14 @@ export default function ChatInterface({
 
             {recentQueries.length > 0 && (
               <div className="flex flex-wrap gap-2">
-                <span className="text-xs text-muted-foreground w-full">Recent queries:</span>
+                <span className="text-sm text-muted-foreground w-full">Recent queries:</span>
                 {recentQueries.map((query, index) => (
                   <Button
                     key={index}
                     variant="ghost"
                     size="sm"
                     onClick={() => handleSuggestionClick(query)}
-                    className="h-6 text-xs text-muted-foreground hover:text-primary"
+                    className="h-8 text-sm text-muted-foreground hover:text-primary hover-glow"
                   >
                     • {query}
                   </Button>

@@ -54,7 +54,7 @@ export default function StockAnalysis({ data, onBack, isLoading = false }: Stock
 
       {/* Overview Cards */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
+        <Card className="shadow-elevated hover-glow">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm text-muted-foreground">Current Price</CardTitle>
           </CardHeader>
@@ -63,7 +63,7 @@ export default function StockAnalysis({ data, onBack, isLoading = false }: Stock
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="shadow-elevated hover-glow">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm text-muted-foreground">52W High</CardTitle>
           </CardHeader>
@@ -72,7 +72,7 @@ export default function StockAnalysis({ data, onBack, isLoading = false }: Stock
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="shadow-elevated hover-glow">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm text-muted-foreground">52W Low</CardTitle>
           </CardHeader>
@@ -81,7 +81,7 @@ export default function StockAnalysis({ data, onBack, isLoading = false }: Stock
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="shadow-elevated hover-glow">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm text-muted-foreground">Volume</CardTitle>
           </CardHeader>

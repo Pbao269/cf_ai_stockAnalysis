@@ -1,6 +1,6 @@
 'use client';
 
-import { Settings, HelpCircle, Menu } from 'lucide-react';
+import { Menu } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { AppMode } from '@/lib/types';
@@ -13,7 +13,7 @@ interface HeaderProps {
 
 export default function Header({ mode, onModeChange, onMenuClick }: HeaderProps) {
   return (
-    <header className="sticky top-0 z-50 w-full border-b bg-background/80 backdrop-blur-lg">
+    <header className="sticky top-0 z-50 w-full border-b bg-background/80 backdrop-blur-lg shadow-elevated">
       <div className="container mx-auto px-4 h-16 flex items-center justify-between">
         {/* Left: Logo and Menu */}
         <div className="flex items-center gap-4">
@@ -27,7 +27,7 @@ export default function Header({ mode, onModeChange, onMenuClick }: HeaderProps)
             <Menu className="h-5 w-5" />
           </Button>
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-primary-700 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-primary-700 flex items-center justify-center shadow-elevated hover-lift">
               <span className="text-primary-foreground font-bold text-lg">S</span>
             </div>
             <div className="hidden sm:block">
@@ -57,7 +57,7 @@ export default function Header({ mode, onModeChange, onMenuClick }: HeaderProps)
               variant="outline"
               size="sm"
               onClick={() => onModeChange('chat')}
-              className="gap-2"
+              className="gap-2 shadow-elevated hover-lift"
             >
               💬 Return to Chat
             </Button>
@@ -65,22 +65,14 @@ export default function Header({ mode, onModeChange, onMenuClick }: HeaderProps)
           
           {mode !== 'screener' && (
             <Button
-              variant="ghost"
-              size="icon"
+              variant="outline"
+              size="sm"
               onClick={() => onModeChange('screener')}
-              aria-label="Advanced Screener"
+              className="shadow-elevated hover-lift"
             >
-              <Settings className="h-5 w-5" />
+              Advanced Search
             </Button>
           )}
-          
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Help"
-          >
-            <HelpCircle className="h-5 w-5" />
-          </Button>
         </div>
       </div>
     </header>

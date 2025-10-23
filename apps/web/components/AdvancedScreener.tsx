@@ -98,10 +98,10 @@ export default function AdvancedScreener({ onBack, onSearch, isLoading = false }
           </div>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" onClick={handleReset}>
+          <Button variant="outline" onClick={handleReset} className="shadow-elevated hover-lift">
             Reset
           </Button>
-          <Button onClick={handleSearch} disabled={isLoading}>
+          <Button onClick={handleSearch} disabled={isLoading} className="shadow-elevated hover-lift">
             <Search className="h-4 w-4 mr-2" />
             {isLoading ? 'Searching...' : 'Search'}
           </Button>
@@ -112,7 +112,7 @@ export default function AdvancedScreener({ onBack, onSearch, isLoading = false }
         {/* Filters Panel */}
         <div className="lg:col-span-1 space-y-6">
           {/* Strategy */}
-          <Card>
+          <Card className="shadow-elevated hover-glow">
             <CardHeader>
               <CardTitle className="text-lg">Investment Strategy</CardTitle>
             </CardHeader>
@@ -135,7 +135,7 @@ export default function AdvancedScreener({ onBack, onSearch, isLoading = false }
           </Card>
 
           {/* Sectors */}
-          <Card>
+          <Card className="shadow-elevated hover-glow">
             <CardHeader>
               <CardTitle className="text-lg">Sectors</CardTitle>
             </CardHeader>
@@ -156,7 +156,7 @@ export default function AdvancedScreener({ onBack, onSearch, isLoading = false }
           </Card>
 
           {/* Market Cap */}
-          <Card>
+          <Card className="shadow-elevated hover-glow">
             <CardHeader>
               <CardTitle className="text-lg">Market Cap</CardTitle>
             </CardHeader>
@@ -182,7 +182,7 @@ export default function AdvancedScreener({ onBack, onSearch, isLoading = false }
         {/* Advanced Filters */}
         <div className="lg:col-span-2 space-y-6">
           {/* Valuation Metrics */}
-          <Card>
+          <Card className="shadow-elevated hover-glow">
             <CardHeader>
               <CardTitle className="text-lg">Valuation Metrics</CardTitle>
             </CardHeader>
@@ -239,7 +239,7 @@ export default function AdvancedScreener({ onBack, onSearch, isLoading = false }
           </Card>
 
           {/* Price & Growth */}
-          <Card>
+          <Card className="shadow-elevated hover-glow">
             <CardHeader>
               <CardTitle className="text-lg">Price & Growth</CardTitle>
             </CardHeader>
@@ -285,7 +285,7 @@ export default function AdvancedScreener({ onBack, onSearch, isLoading = false }
           </Card>
 
           {/* Dividend */}
-          <Card>
+          <Card className="shadow-elevated hover-glow">
             <CardHeader>
               <CardTitle className="text-lg">Dividend</CardTitle>
             </CardHeader>
@@ -320,7 +320,7 @@ export default function AdvancedScreener({ onBack, onSearch, isLoading = false }
 
       {/* Active Filters Summary */}
       {(filters.sectors?.length || filters.strategy || filters.market_cap_preference) && (
-        <Card>
+        <Card className="shadow-elevated hover-glow">
           <CardHeader>
             <CardTitle className="text-lg">Active Filters</CardTitle>
           </CardHeader>
