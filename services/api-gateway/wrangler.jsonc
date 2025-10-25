@@ -24,11 +24,12 @@
     {
       "binding": "entry-dca",
       "service": "entry-dca-mvp"
-    },
-    {
-      "binding": "user-data",
-      "service": "user-data-mvp"
     }
+    // User-data service isolated - uncomment when needed
+    // {
+    //   "binding": "user-data",
+    //   "service": "user-data-mvp"
+    // }
   ],
   "# Optional services (uncomment when needed)": "",
   "# notion-export": { "binding": "notion-export", "service": "notion-export-mvp" },

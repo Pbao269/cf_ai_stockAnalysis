@@ -25,7 +25,8 @@ export interface Env {
   'fundamentals-dcf': Fetcher;
   technicals: Fetcher;
   'entry-dca': Fetcher;
-  'user-data': Fetcher;
+  // User-data service isolated - uncomment when needed
+  // 'user-data': Fetcher;
   // Optional services
   'notion-export'?: Fetcher;
   'etl-workflows'?: Fetcher;
@@ -73,9 +74,10 @@ export default {
         return await handleNotionExport(request, env, corsHeaders);
       }
       
-      if (path === '/watchlist' && request.method === 'POST') {
-        return await handleWatchlist(request, env, corsHeaders);
-      }
+      // Watchlist endpoint removed - isolated in user-data service
+      // if (path === '/watchlist' && request.method === 'POST') {
+      //   return await handleWatchlist(request, env, corsHeaders);
+      // }
 
       return new Response('Not found', { 
         status: 404, 
@@ -106,8 +108,8 @@ async function handleHealthCheck(env: Env, corsHeaders: Record<string, string>):
     overall_status: 'healthy'
   };
 
-  // Check each service
-  const services = ['intent', 'screener', 'fundamentals-dcf', 'technicals', 'entry-dca', 'user-data'];
+  // Check each service (user-data isolated - not part of core functionality)
+  const services = ['intent', 'screener', 'fundamentals-dcf', 'technicals', 'entry-dca'];
   
   for (const serviceName of services) {
     const startTime = Date.now();
@@ -464,7 +466,10 @@ async function handleNotionExport(request: Request, env: Env, corsHeaders: Recor
 
 /**
  * POST /watchlist - Handle watchlist operations
+ * ISOLATED: This function is commented out as user-data service is isolated
+ * Uncomment when user-data service is needed
  */
+/*
 async function handleWatchlist(request: Request, env: Env, corsHeaders: Record<string, string>): Promise<Response> {
   try {
     const { action, ticker, preferences, user_id } = await request.json() as { 
@@ -578,3 +583,4 @@ async function handleWatchlist(request: Request, env: Env, corsHeaders: Record<s
     });
   }
 }
+*/

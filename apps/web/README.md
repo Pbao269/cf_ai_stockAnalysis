@@ -65,7 +65,6 @@ The frontend is designed to integrate with the backend API gateway. Currently us
 - `POST /intent` - Parse natural language queries
 - `POST /screen` - Screen stocks based on filters
 - `GET /analyze?ticker={symbol}` - Analyze specific stock (SSE stream)
-- `POST /watchlist` - Manage user watchlists
 - `GET /healthz` - Health check
 
 ### Mock Data
@@ -76,6 +75,14 @@ The application currently uses mock data for:
 - DCF valuations
 - Technical indicators
 - DCA strategy analysis
+
+### Watchlist Functionality
+
+Watchlist functionality has been **isolated** for future use:
+- Located in `lib/watchlist.ts`
+- Contains interfaces and mock implementation
+- Can be integrated when database functionality is needed
+- Currently not used in the main application
 
 ## Design System
 

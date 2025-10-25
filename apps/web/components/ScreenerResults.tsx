@@ -95,8 +95,8 @@ export default function ScreenerResults({
                     </div>
                   </div>
                   <div className="text-right">
-                    <p className={`text-lg font-bold ${getScoreColor(stock.score)}`}>
-                      {stock.score}
+                    <p className={`text-lg font-bold ${getScoreColor(stock.overall_score)}`}>
+                      {stock.overall_score}
                     </p>
                     <p className="text-xs text-muted-foreground">Score</p>
                   </div>

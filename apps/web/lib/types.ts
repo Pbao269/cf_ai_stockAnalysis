@@ -20,7 +20,13 @@ export interface ScreenerResult extends Stock {
   pb_ratio?: number;
   dividend_yield?: number;
   revenue_growth?: number;
+  beta?: number;
+  overall_score: number;
+  sector_pe_benchmark?: number;
+  sector_relative_score?: number;
   rationale: string;
+  top_drivers: string[];
+  sector_analysis?: string;
   style_scores: {
     buffett?: number;
     lynch?: number;
@@ -28,6 +34,8 @@ export interface ScreenerResult extends Stock {
     deep_value?: number;
     dividend?: number;
   };
+  data_source?: string;
+  last_updated: string;
 }
 
 export interface StockAnalysis {
