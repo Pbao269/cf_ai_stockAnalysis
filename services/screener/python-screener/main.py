@@ -219,9 +219,10 @@ def get_mock_screener_results(filters: Dict[str, Any], style_weights: Dict[str, 
         
         scored_stocks.append(stock_result)
     
-    # Sort by overall score and return top 5
-    scored_stocks.sort(key=lambda x: x['overall_score'], reverse=True)
-    return scored_stocks[:5]
+    # Sort by market cap (descending) and return top 10
+    # Handle None values by treating them as 0 for sorting
+    scored_stocks.sort(key=lambda x: x['market_cap'] or 0, reverse=True)
+    return scored_stocks[:10]
 
 def get_finviz_screener_results(filters: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Fetch real tickers from Finviz and compute sector-aware scores.
@@ -295,6 +296,7 @@ def get_finviz_screener_results(filters: Dict[str, Any]) -> List[Dict[str, Any]]
         logger.info(f"[Finviz] No filters, will return ALL stocks from Finviz...")
     df: pd.DataFrame = screener.screener_view(limit=100, verbose=0)
     logger.info(f"[Finviz] ✅ Got DataFrame with {len(df)} rows")
+    logger.info(f"[Finviz] Available columns: {list(df.columns)}")
 
     # Apply post-filters
     if price_max:
@@ -324,6 +326,7 @@ def get_finviz_screener_results(filters: Dict[str, Any]) -> List[Dict[str, Any]]
     pb_col = get_col('p/b') or get_col('pb') or 'P/B'
     div_col = get_col('dividend') or get_col('div%') or 'Dividend %'
     beta_col = get_col('beta') or 'Beta'
+    mcap_col = get_col('market cap') or get_col('marketcap') or 'Market Cap'
 
     results: List[Dict[str, Any]] = []
     for _, row in df.iterrows():
@@ -337,6 +340,11 @@ def get_finviz_screener_results(filters: Dict[str, Any]) -> List[Dict[str, Any]]
             pb_ratio = _to_float(row.get(pb_col))
             div_pct = _to_float(row.get(div_col))
             beta = _to_float(row.get(beta_col))
+            market_cap = _parse_market_cap(row.get(mcap_col))
+            
+            # Skip stocks with invalid market cap (nan, None, or 0)
+            if market_cap is None or (isinstance(market_cap, float) and (market_cap != market_cap or market_cap <= 0)):
+                continue
 
             # Optionally enrich with yfinance for missing pieces
             if not beta or not price:
@@ -390,9 +398,10 @@ def get_finviz_screener_results(filters: Dict[str, Any]) -> List[Dict[str, Any]]
         except Exception as _e:
             continue
 
-    # Sort and top N similar to mock
-    results.sort(key=lambda x: x['overall_score'], reverse=True)
-    return results[:5]
+    # Sort by market cap (descending) and return top 10
+    # Handle None values by treating them as 0 for sorting
+    results.sort(key=lambda x: x['market_cap'] or 0, reverse=True)
+    return results[:10]
 
 def _map_sector_to_finviz_name(sector: str) -> Optional[str]:
     """Map our sector names to Finviz's exact sector filter values"""
@@ -425,6 +434,28 @@ def _to_float(x: Any) -> Optional[float]:
     try:
         if isinstance(x, str):
             x = x.replace('%', '').replace(',', '').strip()
+        return float(x)
+    except Exception:
+        return None
+
+def _parse_market_cap(x: Any) -> Optional[float]:
+    """Parse market cap from Finviz format (e.g., '1.2B', '500M', '2.5T')"""
+    if x is None:
+        return None
+    try:
+        if isinstance(x, str):
+            x = x.strip().upper()
+            if x.endswith('B'):
+                return float(x[:-1]) * 1_000_000_000
+            elif x.endswith('M'):
+                return float(x[:-1]) * 1_000_000
+            elif x.endswith('T'):
+                return float(x[:-1]) * 1_000_000_000_000
+            elif x.endswith('K'):
+                return float(x[:-1]) * 1_000
+            else:
+                # Try to parse as plain number
+                return float(x.replace(',', ''))
         return float(x)
     except Exception:
         return None

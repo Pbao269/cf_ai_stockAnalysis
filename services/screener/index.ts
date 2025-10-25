@@ -133,7 +133,7 @@ function convertIntentToFilters(intent: SimplifiedIntentType): ScreenFiltersType
     dividend_preference: intent.dividend_preference,
     price_max: intent.price_max,
     style_checklist: getStyleWeightsForStrategy(intent.strategy),
-    limit: 5,
+    limit: 10,
     offset: 0,
     include_rationale: true,
     include_sector_analysis: true
@@ -570,12 +570,12 @@ async function getMockScreenerResults(filters: ScreenFiltersType) {
     };
   });
   
-  // Sort by overall score and return top 5
-  scoredStocks.sort((a, b) => b.overall_score - a.overall_score);
+  // Sort by market cap (descending) instead of overall score
+  scoredStocks.sort((a, b) => b.market_cap - a.market_cap);
   
   return {
     success: true,
-    data: scoredStocks.slice(0, 5),
+    data: scoredStocks.slice(0, 10),
     total_found: scoredStocks.length,
     filters_applied: filters,
     sector_adjustments: getSectorAdjustments(filters)
