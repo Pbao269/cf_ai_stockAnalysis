@@ -3,7 +3,10 @@
 
 import { ScreenerResult, StockAnalysis } from './types';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 
+  (process.env.NODE_ENV === 'production' 
+    ? 'https://api-gateway-mvp.your-subdomain.workers.dev' 
+    : 'http://localhost:8787');
 
 // Simulated delay for realistic loading states
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));

@@ -11,6 +11,7 @@
     }
   ],
   "vars": {
-    "ENVIRONMENT": "mvp"
+    "ENVIRONMENT": "mvp",
+    "PY_SCREENER_URL": "https://cf-ai-stockanalysis.onrender.com"
   }
 }

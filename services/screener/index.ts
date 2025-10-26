@@ -98,11 +98,11 @@ export default {
       return new Response(JSON.stringify({
         success: true,
         data: {
-          results: screenHits,
+          hits: screenHits,
           total_found: screenerData.total_found,
           filters_applied: screenerData.filters_applied,
           sector_adjustments: screenerData.sector_adjustments,
-          data_source: (screenerData as any).data_source || 'worker-mock', // Pass through from Python or indicate worker mock
+          data_source: (screenerData as any).data_source || 'worker-mock',
           market_context: {
             sp500_pe: 30.289,
             sector_standards_applied: true
