@@ -62,13 +62,18 @@ export default {
         });
       }
 
-      // Prefer external Python screener if configured; otherwise use mock data
-      const screenerData = env.PY_SCREENER_URL
-        ? await getPythonScreenerResults(env, filters)
-        : await getMockScreenerResults(filters);
+      // Only use real Python screener data - fail fast if not configured
+      if (!env.PY_SCREENER_URL) {
+        throw new Error('Python screener service not configured - real data required');
+      }
+      
+      const screenerData = await getPythonScreenerResults(env, filters);
+      
+      // Sort by market cap (descending) to ensure consistent ordering
+      const sortedData = screenerData.data.sort((a: any, b: any) => (b.market_cap || 0) - (a.market_cap || 0));
       
       // Convert to ScreenHit format with sector analysis
-      const screenHits = screenerData.data.map((stock: any, index: number) => ({
+      const screenHits = sortedData.map((stock: any, index: number) => ({
         symbol: stock.symbol,
         name: stock.name,
         sector: stock.sector,
@@ -416,173 +421,6 @@ function getTopDrivers(stock: any): string[] {
 }
 
 /**
- * Get mock screener results with realistic sector-specific P/E ratios
- * Uses 2024 US market data with proper sector benchmarks
- */
-async function getMockScreenerResults(filters: ScreenFiltersType) {
-  // Sector-specific P/E standards (2024 US market reality)
-  const SECTOR_PE_STANDARDS = {
-    'Technology': { growth: 80, value: 30, average: 70.91 },
-    'Healthcare': { growth: 120, value: 50, average: 102.94 },
-    'Consumer Defensive': { growth: 60, value: 25, average: 42.37 },
-    'Communication Services': { growth: 50, value: 20, average: 35.55 },
-    'Consumer Cyclical': { growth: 60, value: 25, average: 38.18 },
-    'Real Estate': { growth: 80, value: 30, average: 70.79 },
-    'Industrials': { growth: 45, value: 20, average: 32.22 },
-    'Basic Materials': { growth: 40, value: 18, average: 26.61 },
-    'Energy': { growth: 35, value: 15, average: 26.29 },
-    'Financial Services': { growth: 25, value: 15, average: 15.54 }
-  };
-
-  // Base stock universe with realistic 2024 data
-  const baseStocks = [
-    // Technology Growth
-    { symbol: 'NVDA', name: 'NVIDIA Corporation', sector: 'Technology', 
-      market_cap: 1800000000000, price: 450.0, pe_ratio: 65.0, pb_ratio: 25.0,
-      dividend_yield: 0.1, beta: 1.8, revenue_growth: 0.25 },
-    
-    { symbol: 'AAPL', name: 'Apple Inc.', sector: 'Technology',
-      market_cap: 3000000000000, price: 180.0, pe_ratio: 28.0, pb_ratio: 8.5,
-      dividend_yield: 0.5, beta: 1.2, revenue_growth: 0.08 },
-    
-    { symbol: 'MSFT', name: 'Microsoft Corporation', sector: 'Technology',
-      market_cap: 2800000000000, price: 380.0, pe_ratio: 32.0, pb_ratio: 12.0,
-      dividend_yield: 0.7, beta: 0.9, revenue_growth: 0.12 },
-    
-    // Healthcare Value
-    { symbol: 'JNJ', name: 'Johnson & Johnson', sector: 'Healthcare',
-      market_cap: 450000000000, price: 160.0, pe_ratio: 15.8, pb_ratio: 4.2,
-      dividend_yield: 3.2, beta: 0.7, revenue_growth: 0.04 },
-    
-    { symbol: 'PFE', name: 'Pfizer Inc.', sector: 'Healthcare',
-      market_cap: 180000000000, price: 32.0, pe_ratio: 12.5, pb_ratio: 1.8,
-      dividend_yield: 5.8, beta: 0.6, revenue_growth: -0.15 },
-    
-    // Financial Services Value
-    { symbol: 'BRK.B', name: 'Berkshire Hathaway Inc.', sector: 'Financial Services',
-      market_cap: 750000000000, price: 350.0, pe_ratio: 12.5, pb_ratio: 1.4,
-      dividend_yield: 0.0, beta: 0.8, revenue_growth: 0.06 },
-    
-    { symbol: 'JPM', name: 'JPMorgan Chase & Co.', sector: 'Financial Services',
-      market_cap: 450000000000, price: 150.0, pe_ratio: 11.0, pb_ratio: 1.2,
-      dividend_yield: 2.8, beta: 1.1, revenue_growth: 0.08 },
-    
-    // Consumer Defensive Income
-    { symbol: 'KO', name: 'The Coca-Cola Company', sector: 'Consumer Defensive',
-      market_cap: 280000000000, price: 65.0, pe_ratio: 24.0, pb_ratio: 10.5,
-      dividend_yield: 3.1, beta: 0.6, revenue_growth: 0.05 },
-    
-    { symbol: 'PG', name: 'Procter & Gamble Co.', sector: 'Consumer Defensive',
-      market_cap: 380000000000, price: 155.0, pe_ratio: 26.0, pb_ratio: 7.8,
-      dividend_yield: 2.5, beta: 0.5, revenue_growth: 0.03 },
-    
-    // Energy Value
-    { symbol: 'XOM', name: 'Exxon Mobil Corporation', sector: 'Energy',
-      market_cap: 420000000000, price: 110.0, pe_ratio: 14.0, pb_ratio: 1.8,
-      dividend_yield: 3.8, beta: 1.3, revenue_growth: -0.05 },
-  ];
-
-  // Filter stocks based on strategy and sectors
-  let filteredStocks = baseStocks;
-  
-  // Filter by sectors if specified
-  if (filters.sectors && filters.sectors.length > 0) {
-    filteredStocks = filteredStocks.filter(stock => 
-      filters.sectors!.some(sector => 
-        stock.sector.toLowerCase().includes(sector.toLowerCase())
-      )
-    );
-  }
-  
-  // Filter by market cap preference
-  if (filters.market_cap_preference) {
-    switch (filters.market_cap_preference) {
-      case 'small':
-        filteredStocks = filteredStocks.filter(s => s.market_cap < 2000000000);
-        break;
-      case 'mid':
-        filteredStocks = filteredStocks.filter(s => 2000000000 <= s.market_cap && s.market_cap < 10000000000);
-        break;
-      case 'large':
-        filteredStocks = filteredStocks.filter(s => 10000000000 <= s.market_cap && s.market_cap < 200000000000);
-        break;
-      case 'mega':
-        filteredStocks = filteredStocks.filter(s => s.market_cap >= 200000000000);
-        break;
-    }
-  }
-  
-  // Filter by price max
-  if (filters.price_max) {
-    filteredStocks = filteredStocks.filter(s => s.price <= filters.price_max!);
-  }
-  
-  // Apply sector-aware scoring
-  const scoredStocks = filteredStocks.map(stock => {
-    const sector = stock.sector;
-    const sectorBenchmark = SECTOR_PE_STANDARDS[sector as keyof typeof SECTOR_PE_STANDARDS] || { average: 30 };
-    
-    // Calculate sector-relative scores
-    const peScore = calculatePeScore(stock.pe_ratio, sectorBenchmark.average);
-    const growthScore = calculateGrowthScore(stock.revenue_growth);
-    const valueScore = calculateValueScore(stock.pe_ratio, stock.pb_ratio, sectorBenchmark);
-    const momentumScore = calculateMomentumScore(stock.beta);
-    const dividendScore = calculateDividendScore(stock.dividend_yield);
-    
-    // Strategy-specific scoring
-    let overallScore: number;
-    switch (filters.strategy) {
-      case 'growth':
-        overallScore = (growthScore * 0.4 + peScore * 0.3 + momentumScore * 0.3);
-        break;
-      case 'value':
-        overallScore = (valueScore * 0.5 + dividendScore * 0.3 + peScore * 0.2);
-        break;
-      case 'income':
-        overallScore = (dividendScore * 0.6 + valueScore * 0.3 + peScore * 0.1);
-        break;
-      case 'momentum':
-        overallScore = (momentumScore * 0.5 + growthScore * 0.3 + peScore * 0.2);
-        break;
-      default: // balanced
-        overallScore = (peScore * 0.25 + growthScore * 0.25 + valueScore * 0.20 + 
-                      momentumScore * 0.15 + dividendScore * 0.15);
-    }
-    
-    return {
-      symbol: stock.symbol,
-      name: stock.name,
-      sector: stock.sector,
-      market_cap: stock.market_cap,
-      price: stock.price,
-      pe_ratio: stock.pe_ratio,
-      pb_ratio: stock.pb_ratio,
-      dividend_yield: stock.dividend_yield,
-      beta: stock.beta,
-      revenue_growth: stock.revenue_growth,
-      overall_score: Math.round(overallScore * 100) / 100,
-      sector_pe_benchmark: sectorBenchmark.average,
-      pe_score: peScore,
-      growth_score: growthScore,
-      value_score: valueScore,
-      momentum_score: momentumScore,
-      dividend_score: dividendScore
-    };
-  });
-  
-  // Sort by market cap (descending) instead of overall score
-  scoredStocks.sort((a, b) => b.market_cap - a.market_cap);
-  
-  return {
-    success: true,
-    data: scoredStocks.slice(0, 10),
-    total_found: scoredStocks.length,
-    filters_applied: filters,
-    sector_adjustments: getSectorAdjustments(filters)
-  };
-}
-
-/**
  * Call external Python screener service (if configured) and adapt its response
  */
 async function getPythonScreenerResults(env: Env, filters: ScreenFiltersType) {
@@ -630,9 +468,9 @@ async function getPythonScreenerResults(env: Env, filters: ScreenFiltersType) {
       data_source: 'python-empty'
     };
   } catch (err) {
-    // On error, fallback to mock results to preserve availability
-    console.error('Python screener failed, using mock:', (err as Error).message);
-    return await getMockScreenerResults(filters);
+    // Fail fast - no mock data fallback
+    console.error('Python screener failed:', (err as Error).message);
+    throw new Error(`Python screener service failed: ${(err as Error).message}`);
   }
 }
 

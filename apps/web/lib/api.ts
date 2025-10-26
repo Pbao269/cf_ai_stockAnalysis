@@ -2,7 +2,6 @@
 // TODO: Wire these functions to the actual API gateway endpoints
 
 import { ScreenerResult, StockAnalysis } from './types';
-import { mockScreenerResults, mockStockAnalysis } from './mockData';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8787';
 
@@ -33,26 +32,7 @@ export async function parseIntent(query: string): Promise<{
     return result;
   } catch (error) {
     console.error('Intent API error:', error);
-    // Fallback to mock data for development
-    return {
-      success: true,
-      data: {
-        objective: 'growth',
-        risk_tolerance: 'moderate',
-        style_weights: {
-          value: 0.2,
-          growth: 0.4,
-          momentum: 0.2,
-          quality: 0.2,
-          size: 0.0,
-          volatility: 0.0,
-        },
-        gates: {
-          sectors: ['Technology'],
-          min_market_cap: 1000000000,
-        },
-      },
-    };
+    throw new Error(`Intent API failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
@@ -80,13 +60,7 @@ export async function screenStocks(filters: any): Promise<{
     return result;
   } catch (error) {
     console.error('Screen API error:', error);
-    // Fallback to mock data for development
-    return {
-      success: true,
-      data: {
-        hits: mockScreenerResults,
-      },
-    };
+    throw new Error(`Screen API failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
@@ -150,12 +124,7 @@ export async function analyzeStock(symbol: string): Promise<{
     };
   } catch (error) {
     console.error('Analyze API error:', error);
-    // Fallback to mock data for development
-    const analysis = { ...mockStockAnalysis, symbol, name: `${symbol} Analysis` };
-    return {
-      success: true,
-      data: analysis,
-    };
+    throw new Error(`Analyze API failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
@@ -179,20 +148,7 @@ export async function checkHealth(): Promise<{
     return result;
   } catch (error) {
     console.error('Health check API error:', error);
-    // Fallback to mock data for development
-    return {
-      success: true,
-      data: {
-        overall_status: 'healthy',
-        services: {
-          intent: { status: 'healthy' },
-          screener: { status: 'healthy' },
-          'fundamentals-dcf': { status: 'healthy' },
-          technicals: { status: 'healthy' },
-          'entry-dca': { status: 'healthy' },
-        },
-      },
-    };
+    throw new Error(`Health check failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
