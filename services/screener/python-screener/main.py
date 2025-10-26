@@ -149,7 +149,7 @@ def get_finviz_screener_results(filters: Dict[str, Any]) -> List[Dict[str, Any]]
         logger.info(f"[Finviz] Filters set, calling screener_view...")
     else:
         logger.info(f"[Finviz] No filters, will return ALL stocks from Finviz...")
-    df: pd.DataFrame = screener.screener_view(limit=100, verbose=0)
+    df: pd.DataFrame = screener.screener_view(limit=500, verbose=0)
     logger.info(f"[Finviz] ✅ Got DataFrame with {len(df)} rows")
 
     # Apply post-filters
@@ -200,20 +200,43 @@ def get_finviz_screener_results(filters: Dict[str, Any]) -> List[Dict[str, Any]]
             if market_cap is None or (isinstance(market_cap, float) and (market_cap != market_cap or market_cap <= 0)):
                 continue
 
-            # Optionally enrich with yfinance for missing pieces
-            if not beta or not price:
+            # Enrich with yfinance for missing critical data
+            try:
+                y = yf.Ticker(symbol)
+                info = y.fast_info if hasattr(y, 'fast_info') else {}
+                y_info = y.info or {}
+                
+                # Get missing price and beta
+                price = price or _to_float(getattr(info, 'last_price', None) or info.get('lastPrice'))
+                beta = beta or _to_float(y_info.get('beta'))
+                
+                # Get missing dividend yield
+                if not div_pct:
+                    div_pct = _to_float(y_info.get('dividendYield'))
+                    if div_pct:
+                        div_pct = div_pct * 100  # Convert to percentage
+                
+                # Get revenue growth (5-year average)
+                revenue_growth = None
                 try:
-                    y = yf.Ticker(symbol)
-                    info = y.fast_info if hasattr(y, 'fast_info') else {}
-                    price = price or _to_float(getattr(info, 'last_price', None) or info.get('lastPrice'))
-                    beta = beta or _to_float((y.info or {}).get('beta'))
+                    financials = y.financials
+                    if not financials.empty and len(financials.columns) >= 2:
+                        revenues = financials.loc['Total Revenue']
+                        if len(revenues) >= 2:
+                            latest_revenue = revenues.iloc[0]
+                            prev_revenue = revenues.iloc[1]
+                            if latest_revenue and prev_revenue and prev_revenue != 0:
+                                revenue_growth = (latest_revenue - prev_revenue) / abs(prev_revenue)
                 except Exception:
                     pass
+                    
+            except Exception:
+                pass
 
             # Compute scores
             sector_benchmark = SECTOR_PE_STANDARDS.get(sector, {'average': 30})
             pe_score = calculate_pe_score(pe_ratio or 0, sector_benchmark['average'])
-            growth_score = calculate_growth_score(0.0)  # unknown; default neutral
+            growth_score = calculate_growth_score(revenue_growth or 0)
             value_score = calculate_value_score(pe_ratio or 0, pb_ratio or 0, sector_benchmark)
             momentum_score = calculate_momentum_score(beta or 0)
             dividend_score = calculate_dividend_score(div_pct or 0)
@@ -252,9 +275,29 @@ def get_finviz_screener_results(filters: Dict[str, Any]) -> List[Dict[str, Any]]
         except Exception as _e:
             continue
 
-    # Sort by market cap (descending) and return top 10
-    results.sort(key=lambda x: x['market_cap'] or 0, reverse=True)
-    return results[:10]
+    # Sort by overall score (descending) to get best stocks for the strategy
+    results.sort(key=lambda x: x['overall_score'] or 0, reverse=True)
+    
+    # Apply diversification: ensure we get stocks from different sectors
+    diversified_results = []
+    sectors_seen = set()
+    
+    # First pass: get top stocks from different sectors
+    for stock in results:
+        if len(diversified_results) >= 10:
+            break
+        if stock['sector'] not in sectors_seen or len(diversified_results) < 5:
+            diversified_results.append(stock)
+            sectors_seen.add(stock['sector'])
+    
+    # Second pass: fill remaining slots with highest scores regardless of sector
+    for stock in results:
+        if len(diversified_results) >= 10:
+            break
+        if stock not in diversified_results:
+            diversified_results.append(stock)
+    
+    return diversified_results
 
 def _map_sector_to_finviz_name(sector: str) -> Optional[str]:
     """Map our sector names to Finviz's exact sector filter values"""
