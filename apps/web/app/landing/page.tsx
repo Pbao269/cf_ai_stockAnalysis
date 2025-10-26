@@ -15,10 +15,14 @@ export default function LandingPage() {
   const [isLoading, setIsLoading] = useState(false);
 
   const handleSendMessage = useCallback(async (message: string) => {
+    // Preprocess input: trim whitespace and normalize
+    const processedMessage = message.trim();
+    if (!processedMessage) return;
+
     const userMessage: ChatMessage = {
       id: generateId(),
       role: 'user',
-      content: message,
+      content: processedMessage,
       timestamp: new Date(),
     };
 
@@ -26,24 +30,43 @@ export default function LandingPage() {
     setIsLoading(true);
 
     try {
-      const inputType = classifyInput(message);
+      // Classify the input type
+      const inputType = classifyInput(processedMessage);
+      
+      // Add classification feedback message
+      const classificationMessage: ChatMessage = {
+        id: generateId(),
+        role: 'assistant',
+        content: inputType === 'ticker' 
+          ? `🔍 Analyzing ${processedMessage.toUpperCase()}...` 
+          : `🔎 Searching for stocks matching: "${processedMessage}"...`,
+        timestamp: new Date(),
+      };
+      setMessages(prev => [...prev, classificationMessage]);
       
       if (inputType === 'ticker') {
         // Direct stock analysis
-        const analysis = await analyzeStock(message.toUpperCase());
+        const ticker = processedMessage.toUpperCase();
+        const analysis = await analyzeStock(ticker);
         if (analysis.success) {
-          router.push(`/analysis?ticker=${message.toUpperCase()}`);
+          router.push(`/analysis?ticker=${ticker}`);
+        } else {
+          throw new Error('Analysis failed');
         }
       } else {
         // Intent-based screening
-        const intent = await parseIntent(message);
+        const intent = await parseIntent(processedMessage);
         if (intent.success) {
           const screening = await screenStocks(intent.data);
           if (screening.success) {
             // Pass results via URL to screener page
             const resultsParam = encodeURIComponent(JSON.stringify(screening.data));
             router.push(`/screener?results=${resultsParam}`);
+          } else {
+            throw new Error('Screening failed');
           }
+        } else {
+          throw new Error('Intent parsing failed');
         }
       }
     } catch (error) {
@@ -51,7 +74,7 @@ export default function LandingPage() {
       const errorMessage: ChatMessage = {
         id: generateId(),
         role: 'assistant',
-        content: 'Sorry, I encountered an error processing your request. Please try again.',
+        content: `❌ Sorry, I encountered an error processing your request: ${error instanceof Error ? error.message : 'Unknown error'}. Please try again.`,
         timestamp: new Date(),
       };
       setMessages(prev => [...prev, errorMessage]);

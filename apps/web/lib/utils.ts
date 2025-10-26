@@ -87,11 +87,66 @@ export function debounce<T extends (...args: any[]) => any>(
 }
 
 export function classifyInput(input: string): 'ticker' | 'intent' {
-  // Simple classifier: if input is 1-5 uppercase letters, likely a ticker
+  const trimmedInput = input.trim().toUpperCase();
+  
+  // Known ticker patterns
   const tickerPattern = /^[A-Z]{1,5}$/;
-  if (tickerPattern.test(input.trim().toUpperCase())) {
+  const tickerWithAnalysis = /^[A-Z]{1,5}\s+(analysis|analyze|analysis|price|chart|technical|fundamental)$/i;
+  
+  // Common ticker symbols (major stocks)
+  const commonTickers = new Set([
+    'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA', 'META', 'NVDA', 'NFLX', 'AMD', 'INTC',
+    'CRM', 'ADBE', 'PYPL', 'UBER', 'LYFT', 'SQ', 'ROKU', 'ZM', 'PTON', 'DOCU',
+    'SPOT', 'TWTR', 'SNAP', 'PINS', 'SQ', 'SHOP', 'OKTA', 'CRWD', 'ZS', 'NET',
+    'SNOW', 'PLTR', 'RBLX', 'COIN', 'HOOD', 'SOFI', 'AFRM', 'UPST', 'OPEN', 'Z',
+    'BRK.A', 'BRK.B', 'JPM', 'BAC', 'WFC', 'GS', 'MS', 'C', 'AXP', 'V', 'MA',
+    'JNJ', 'PFE', 'UNH', 'ABBV', 'MRK', 'TMO', 'ABT', 'DHR', 'BMY', 'AMGN',
+    'KO', 'PEP', 'WMT', 'PG', 'JNJ', 'HD', 'DIS', 'NKE', 'MCD', 'SBUX'
+  ]);
+  
+  // Direct ticker analysis patterns
+  if (tickerWithAnalysis.test(trimmedInput)) {
     return 'ticker';
   }
+  
+  // Pure ticker symbol (1-5 uppercase letters)
+  if (tickerPattern.test(trimmedInput)) {
+    // Additional validation: check if it's a known ticker or looks like one
+    if (commonTickers.has(trimmedInput) || 
+        (trimmedInput.length >= 2 && trimmedInput.length <= 5 && 
+         /^[A-Z]+$/.test(trimmedInput))) {
+      return 'ticker';
+    }
+  }
+  
+  // Intent patterns (natural language queries)
+  const intentKeywords = [
+    'find', 'search', 'look for', 'show me', 'recommend', 'suggest',
+    'undervalued', 'overvalued', 'growth', 'value', 'dividend', 'momentum',
+    'stocks', 'companies', 'sector', 'industry', 'portfolio', 'invest',
+    'best', 'top', 'cheap', 'expensive', 'high', 'low', 'buy', 'sell',
+    'analysis', 'research', 'screening', 'filter', 'criteria', 'metrics',
+    'pe ratio', 'pb ratio', 'roe', 'roa', 'debt', 'revenue', 'earnings',
+    'tech', 'healthcare', 'finance', 'energy', 'consumer', 'industrial',
+    'small cap', 'mid cap', 'large cap', 'mega cap', 'blue chip'
+  ];
+  
+  const lowerInput = input.toLowerCase();
+  const hasIntentKeywords = intentKeywords.some(keyword => 
+    lowerInput.includes(keyword)
+  );
+  
+  // If it contains intent keywords, classify as intent
+  if (hasIntentKeywords) {
+    return 'intent';
+  }
+  
+  // If it's a short string that could be a ticker, but not clearly intent
+  if (trimmedInput.length <= 5 && /^[A-Z]+$/.test(trimmedInput)) {
+    return 'ticker';
+  }
+  
+  // Default to intent for longer, more complex queries
   return 'intent';
 }
 

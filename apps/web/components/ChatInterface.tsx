@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import { ChatMessage } from '@/lib/types';
-import { cn } from '@/lib/utils';
+import { cn, classifyInput } from '@/lib/utils';
 
 interface ChatInterfaceProps {
   messages: ChatMessage[];
@@ -22,14 +22,18 @@ interface ChatInterfaceProps {
 const suggestions = [
   "undervalued tech stocks",
   "AAPL",
-  "growth stocks with high momentum",
+  "growth stocks with high momentum", 
+  "TSLA analysis",
   "dividend stocks in healthcare",
+  "MSFT",
 ];
 
 const recentQueries = [
   "undervalued healthcare stocks",
-  "TSLA analysis",
-  "dividend stocks",
+  "GOOGL",
+  "value stocks with low P/E",
+  "NVDA analysis",
+  "momentum stocks",
 ];
 
 export default function ChatInterface({ 
@@ -111,15 +115,15 @@ export default function ChatInterface({
       <div className="px-4 py-4">
         <form onSubmit={handleSubmit} className="relative">
           <div className="relative flex items-center">
-            <Input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={placeholder}
-              disabled={isLoading}
-              className="pr-16 h-14 text-lg shadow-elevated hover:shadow-elevated-lg focus:shadow-elevated-lg transition-shadow"
-            />
+                <Input
+                  ref={inputRef}
+                  type="text"
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  placeholder="Try: 'AAPL' or 'undervalued tech stocks'"
+                  disabled={isLoading}
+                  className="pr-16 h-14 text-lg shadow-elevated hover:shadow-elevated-lg focus:shadow-elevated-lg transition-shadow"
+                />
             <div className="absolute right-2 flex items-center gap-1">
               <Button
                 type="submit"
@@ -138,47 +142,53 @@ export default function ChatInterface({
           </div>
         </form>
 
-        {/* Suggestions */}
-        {showSuggestions && messages.length === 0 && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="mt-6 space-y-4"
-          >
-            <div className="flex flex-wrap gap-2">
-              <span className="text-sm text-muted-foreground w-full">💡 Try:</span>
-              {suggestions.map((suggestion, index) => (
-                <Button
-                  key={index}
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleSuggestionClick(suggestion)}
-                  className="h-9 text-sm shadow-elevated hover-lift"
-                >
-                  {suggestion}
-                </Button>
-              ))}
-            </div>
+            {/* Suggestions */}
+            {showSuggestions && messages.length === 0 && (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.2 }}
+                className="mt-6 space-y-4"
+              >
+                <div className="flex flex-wrap gap-2">
+                  <span className="text-sm text-muted-foreground w-full">💡 Try:</span>
+                  {suggestions.map((suggestion, index) => {
+                    const isTicker = classifyInput(suggestion) === 'ticker';
+                    return (
+                      <Button
+                        key={index}
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleSuggestionClick(suggestion)}
+                        className="h-9 text-sm shadow-elevated hover-lift"
+                      >
+                        {isTicker ? '📊' : '🔍'} {suggestion}
+                      </Button>
+                    );
+                  })}
+                </div>
 
-            {recentQueries.length > 0 && (
-              <div className="flex flex-wrap gap-2">
-                <span className="text-sm text-muted-foreground w-full">Recent queries:</span>
-                {recentQueries.map((query, index) => (
-                  <Button
-                    key={index}
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => handleSuggestionClick(query)}
-                    className="h-8 text-sm text-muted-foreground hover:text-primary hover-glow"
-                  >
-                    • {query}
-                  </Button>
-                ))}
-              </div>
+                {recentQueries.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    <span className="text-sm text-muted-foreground w-full">Recent queries:</span>
+                    {recentQueries.map((query, index) => {
+                      const isTicker = classifyInput(query) === 'ticker';
+                      return (
+                        <Button
+                          key={index}
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleSuggestionClick(query)}
+                          className="h-8 text-sm text-muted-foreground hover:text-primary hover-glow"
+                        >
+                          {isTicker ? '📊' : '🔍'} {query}
+                        </Button>
+                      );
+                    })}
+                  </div>
+                )}
+              </motion.div>
             )}
-          </motion.div>
-        )}
       </div>
     </div>
   );
