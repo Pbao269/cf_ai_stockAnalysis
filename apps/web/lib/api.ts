@@ -49,11 +49,18 @@ export async function screenStocks(filters: any): Promise<{
   error?: string;
 }> {
   try {
+    // Add timeout for long-running requests
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 second timeout
+    
     const response = await fetch(`${API_BASE_URL}/screen`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ filters }),
+      signal: controller.signal,
     });
+    
+    clearTimeout(timeoutId);
     
     if (!response.ok) {
       throw new Error(`Screen API failed: ${response.status}`);
@@ -62,6 +69,9 @@ export async function screenStocks(filters: any): Promise<{
     const result = await response.json();
     return result;
   } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('Screen API timeout - the service may be slow. Please try again.');
+    }
     console.error('Screen API error:', error);
     throw new Error(`Screen API failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
