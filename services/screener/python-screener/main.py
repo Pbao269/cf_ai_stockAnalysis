@@ -296,7 +296,6 @@ def get_finviz_screener_results(filters: Dict[str, Any]) -> List[Dict[str, Any]]
         logger.info(f"[Finviz] No filters, will return ALL stocks from Finviz...")
     df: pd.DataFrame = screener.screener_view(limit=100, verbose=0)
     logger.info(f"[Finviz] ✅ Got DataFrame with {len(df)} rows")
-    logger.info(f"[Finviz] Available columns: {list(df.columns)}")
 
     # Apply post-filters
     if price_max:
@@ -380,7 +379,7 @@ def get_finviz_screener_results(filters: Dict[str, Any]) -> List[Dict[str, Any]]
                 'name': name,
                 'sector': sector,
                 'industry': industry,
-                'market_cap': None,
+                'market_cap': market_cap,
                 'price': price,
                 'pe_ratio': pe_ratio,
                 'pb_ratio': pb_ratio,
@@ -399,7 +398,6 @@ def get_finviz_screener_results(filters: Dict[str, Any]) -> List[Dict[str, Any]]
             continue
 
     # Sort by market cap (descending) and return top 10
-    # Handle None values by treating them as 0 for sorting
     results.sort(key=lambda x: x['market_cap'] or 0, reverse=True)
     return results[:10]
 
